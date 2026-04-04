@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>D365FO Label Explorer</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Splash Screen (Initial Loading) -->
+  <div id="splash-screen" class="overlay splash-screen">
+    <div class="splash-content">
+      <div class="logo-icon spinning">🏷️</div>
+      <h2 data-i18n="app_title">D365FO Label Explorer</h2>
+      <p class="splash-status">Loading...</p>
+    </div>
+  </div>
+
+  <!-- Loading Overlay (Onboarding) -->
+  <div id="onboarding-overlay" class="overlay hidden">
+    <div class="loader-box">
+      <div class="logo-icon">🏷️</div>
+      <h2 data-i18n="app_title">D365FO Label Explorer</h2>
+      <p data-i18n="app_subtitle">Ultra-fast label file explorer for Dynamics 365 Finance & Operations</p>
+      <p class="hint" data-i18n="select_folder_hint">Select your <code>PackagesLocalDirectory</code> folder to get started.</p>
+      <p class="hint hint-path" data-i18n="typical_path">Typically: <code>K:\AosService\PackagesLocalDirectory\</code></p>
+      
+      <button id="btn-select-folder" class="file-label">
+        <span class="btn-icon">📁</span> <span data-i18n="btn_select_folder">Select D365FO Folder</span>
+      </button>
+      
+      <div id="scan-progress" class="scan-progress hidden">
+        <div class="spinner"></div>
+        <p class="scan-status" data-i18n="scanning_models">Scanning for models...</p>
+      </div>
+      
+      <div id="browser-warning" class="browser-warning hidden">
+        <p data-i18n="browser_warning_title">⚠️ Your browser doesn't support the File System Access API.</p>
+        <p data-i18n="browser_warning_hint">Please use <strong>Google Chrome 86+</strong> or <strong>Microsoft Edge 86+</strong>.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Discovery Dashboard -->
+  <div id="discovery-dashboard" class="overlay hidden">
+    <div class="loader-box dashboard-box">
+      <div class="logo-icon">📊</div>
+      <h2 data-i18n="discovery_complete">Discovery Complete</h2>
+      <p id="discovery-summary">Found <strong>0</strong> models with <strong>0</strong> label files.</p>
+      
+      <div class="selection-controls">
+        <button id="btn-toggle-selection" class="btn btn-outline btn-sm">
+          ✓ <span data-i18n="btn_select_all">Select All</span>
+        </button>
+        <select id="global-language-select" class="global-language-select">
+          <option value="" data-i18n="select_language">Select language...</option>
+        </select>
+        <button id="btn-apply-global-language" class="btn btn-outline btn-sm">
+          <span data-i18n="btn_apply_global_language">Apply Global Language</span>
+        </button>
+        <span id="selection-info" class="selection-info">0 files selected</span>
+      </div>
+      
+      <div id="models-list" class="models-list">
+        <!-- Models will be rendered here -->
+      </div>
+      
+      <div class="dashboard-actions">
+        <button id="btn-start-indexing" class="file-label">
+          <span class="btn-icon">⚡</span> <span data-i18n="btn_start_indexing">Start Indexing Selected</span>
+        </button>
+        <button id="btn-cancel-rescan" class="btn btn-outline hidden">
+          <span data-i18n="btn_cancel_rescan">Cancel</span>
+        </button>
+        <button id="btn-change-folder" class="btn btn-outline">
+          <span data-i18n="btn_change_folder">Change Folder</span>
+        </button>
+      </div>
+      
+      <div id="indexing-progress" class="indexing-progress hidden">
+        <div class="progress-bar">
+          <div id="progress-fill" class="progress-fill"></div>
+        </div>
+        <p id="indexing-status" class="indexing-status" data-i18n="indexing_labels">Indexing labels...</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main Application -->
+  <div id="app" class="hidden">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-brand">
+        <span class="brand-icon">🏷️</span>
+        <span class="brand-name">D365FO Label Explorer</span>
+        <span class="pill">MVP</span>
+      </div>
+      
+      <div class="header-center">
+        <span id="label-count-badge" class="graph-count-badge">0 labels indexed</span>
+        <span id="last-indexed" class="last-indexed"></span>
+      </div>
+      
+      <div class="header-actions">
+        <button id="btn-rescan" class="btn btn-outline btn-sm" title="Re-scan folder (Alt+R)">
+          <span class="btn-icon">🔄</span>
+          <span class="btn-text" data-i18n="btn_rescan">Re-scan</span>
+        </button>
+        <button id="btn-header-change-folder" class="btn btn-outline btn-sm" title="Change folder (Alt+E)">
+          <span class="btn-icon">📁</span>
+          <span class="btn-text" data-i18n="btn_change_folder">Change Folder</span>
+        </button>
+        <button id="btn-shortcuts-help" class="btn btn-outline btn-sm" title="Keyboard shortcuts">
+          <span class="btn-icon">⌨️</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Layout -->
+    <div class="layout">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-search">
+          <div class="search-wrap">
+            <span class="search-icon">🔍</span>
+            <input type="text" id="search-input" data-i18n-placeholder="search_placeholder" placeholder="Search labels..." autocomplete="off">
+            <button id="clear-search" class="clear-btn hidden" title="Clear">✕</button>
+          </div>
+          <div id="search-info" class="search-info"></div>
+          
+          <!-- Advanced Search Button -->
+          <button id="btn-advanced-search" class="btn btn-outline btn-full" title="Advanced Search (Alt+S)">
+            🔍 <span data-i18n="btn_advanced_search">Advanced Search</span> <kbd>Alt+S</kbd>
+          </button>
+          <button id="btn-system-settings" class="btn btn-outline btn-full" title="System Settings (Alt+P)">
+            ⚙️ <span data-i18n="btn_system_settings">System Settings</span> <kbd>Alt+P</kbd>
+          </button>
+          
+          <!-- Active Filters Pills -->
+          <div id="active-filters" class="active-filters hidden">
+            <!-- Filter pills will be rendered here -->
+          </div>
+        </div>
+
+        <div class="sidebar-group">
+          <div class="group-header">
+            <span data-i18n="results">Results</span>
+            <span id="results-count" class="count-badge">0</span>
+          </div>
+          
+          <!-- Sorting Selector -->
+          <div class="sort-container">
+            <label for="sort-select" class="sort-label" data-i18n="sort_label">Sort:</label>
+            <select id="sort-select" class="sort-select">
+              <option value="relevance" data-i18n="sort_relevance">Relevance</option>
+              <option value="labelId-asc" data-i18n="sort_labelid_asc">Label ID (A-Z)</option>
+              <option value="labelId-desc" data-i18n="sort_labelid_desc">Label ID (Z-A)</option>
+              <option value="text-asc" data-i18n="sort_text_asc">Text (A-Z)</option>
+              <option value="text-desc" data-i18n="sort_text_desc">Text (Z-A)</option>
+              <option value="model-asc" data-i18n="sort_model_asc">Model (A-Z)</option>
+            </select>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main Area -->
+      <main class="main-area">
+        <!-- Results Container (Virtual Scroll) -->
+        <div id="results-container" class="results-container">
+          <div id="results-viewport" class="vscroll-container">
+            <div id="results-inner" class="vscroll-inner">
+              <!-- Virtual scroll cards will be rendered here -->
+            </div>
+          </div>
+          
+          <!-- Empty State -->
+          <div id="empty-state" class="empty-state">
+            <div class="welcome-icon">🔍</div>
+            <h2 data-i18n="empty_title">Start Searching</h2>
+            <p data-i18n="empty_description">Type in the search box to find labels across all your D365FO models.</p>
+            <div class="feature-grid">
+              <div class="feature">
+                <strong data-i18n="feature_fast_search">Fast Search</strong><br>
+                <span data-i18n="feature_fast_search_desc">&lt; 200ms even with 100k+ labels</span>
+              </div>
+              <div class="feature">
+                <strong data-i18n="feature_fuzzy">Fuzzy Match</strong><br>
+                <span data-i18n="feature_fuzzy_desc">Find labels even with typos</span>
+              </div>
+              <div class="feature">
+                <strong data-i18n="feature_copy">Copy ID</strong><br>
+                <span data-i18n="feature_copy_desc">One-click copy @Prefix:ID</span>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Loading State -->
+          <div id="loading-state" class="loading-state hidden">
+            <div class="spinner"></div>
+            <p>Searching...</p>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- Advanced Search Modal -->
+  <div id="advanced-search-modal" class="modal-overlay hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 data-i18n="modal_advanced_search">🔍 Advanced Search</h3>
+        <button id="btn-close-modal" class="btn-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="filter-section">
+          <label class="filter-label" data-i18n="modal_models">Models</label>
+          <div class="selector-row">
+            <span id="selected-models-summary" class="selector-summary" data-i18n="all_models">All models</span>
+            <button id="btn-open-model-selector" class="btn btn-outline btn-sm" data-i18n="btn_select_models">Select Models</button>
+          </div>
+        </div>
+
+        <div class="filter-section">
+          <label class="filter-label" data-i18n="modal_languages">Languages</label>
+          <div class="selector-row">
+            <span id="selected-languages-summary" class="selector-summary" data-i18n="all_languages">All languages</span>
+            <button id="btn-open-language-selector" class="btn btn-outline btn-sm" data-i18n="btn_select_languages">Select Languages</button>
+          </div>
+        </div>
+
+        <div class="filter-section">
+          <label class="toggle-container">
+            <input type="checkbox" id="modal-exact-match">
+            <span class="toggle-switch"></span>
+            <span class="toggle-label" data-i18n="exact_match">Exact Match</span>
+          </label>
+        </div>
+
+        <div class="filter-section">
+          <label class="filter-label" data-i18n="translation_compliance">Translation Compliance</label>
+          <div class="selector-row">
+            <span id="required-languages-summary" class="selector-summary" data-i18n="no_required_languages">No required languages</span>
+            <button id="btn-open-required-language-selector" class="btn btn-outline btn-sm" data-i18n="btn_set_required">Set Required</button>
+          </div>
+          <label class="toggle-container" style="margin-top: 12px;">
+            <input type="checkbox" id="modal-hide-incomplete">
+            <span class="toggle-switch"></span>
+            <span class="toggle-label" data-i18n="hide_incomplete">Hide incomplete labels</span>
+          </label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-clear-filters" class="btn btn-outline" data-i18n="btn_clear_filters">Clear All</button>
+        <button id="btn-apply-filters" class="btn btn-primary" data-i18n="btn_apply_filters">Apply Filters</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- System Settings Modal -->
+  <div id="system-settings-modal" class="modal-overlay hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 data-i18n="modal_system_settings">⚙️ System Settings</h3>
+        <button id="btn-close-settings-modal" class="btn-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="filter-section">
+          <label class="filter-label" data-i18n="display_settings">Display Settings</label>
+          <div class="display-option">
+            <label class="display-option-label" data-i18n="label_format">Label ID Format</label>
+            <div class="radio-group">
+              <label class="radio-option">
+                <input type="radio" name="labelFormat" value="full" id="format-full" checked>
+                <span data-i18n="format_full">Full (@Prefix:ID)</span>
+              </label>
+              <label class="radio-option">
+                <input type="radio" name="labelFormat" value="simple" id="format-simple">
+                <span data-i18n="format_simple">Simple (ID only)</span>
+              </label>
+              <label class="radio-option">
+                <input type="radio" name="labelFormat" value="hybrid" id="format-hybrid">
+                <span data-i18n="format_hybrid">Hybrid (ID + prefix below)</span>
+              </label>
+            </div>
+          </div>
+          <label class="toggle-container" style="margin-top: 12px;">
+            <input type="checkbox" id="modal-group-duplicates" checked>
+            <span class="toggle-switch"></span>
+            <span class="toggle-label" data-i18n="group_duplicates">Group Duplicate Labels</span>
+          </label>
+        </div>
+
+        <div class="filter-section">
+          <label class="filter-label" for="ui-language-select" data-i18n="interface_language">Interface Language</label>
+          <select id="ui-language-select" class="sort-select">
+            <option value="auto" data-i18n="lang_auto">Auto (Browser)</option>
+            <option value="en">English</option>
+            <option value="pt-BR">Português (Brasil)</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-apply-settings" class="btn btn-primary" data-i18n="btn_apply_settings">Apply Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Generic Selector Modal -->
+  <div id="item-selector-modal" class="modal-overlay hidden">
+    <div class="modal-content selector-modal-content">
+      <div class="modal-header">
+        <h3 id="item-selector-title" data-i18n="select_items">Select Items</h3>
+        <button id="btn-close-selector-modal" class="btn-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="selector-toolbar">
+          <input id="item-selector-search" class="selector-search" type="text" data-i18n-placeholder="search_items" placeholder="Search...">
+          <button id="btn-toggle-all-selector" class="btn btn-outline btn-sm" data-i18n="btn_toggle_select_all">Select All</button>
+        </div>
+        <div id="item-selector-list" class="selector-list"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-close-selector" class="btn btn-primary" data-i18n="btn_done">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Label Details Modal -->
+  <div id="label-details-modal" class="modal-overlay hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 data-i18n="modal_label_occurrences">📦 Label Occurrences</h3>
+        <button id="btn-close-details-modal" class="btn-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="label-details-content">
+          <!-- Label occurrence details rendered here -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-close-details" class="btn btn-primary" data-i18n="btn_close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Keyboard Shortcuts Modal -->
+  <div id="shortcuts-modal" class="modal-overlay hidden">
+    <div class="modal-content shortcuts-modal-content">
+      <div class="modal-header">
+        <h3 data-i18n="shortcuts_title">⌨️ Keyboard Shortcuts</h3>
+        <button id="btn-close-shortcuts-modal" class="btn-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="shortcuts-grid">
+          <div class="shortcut-item"><kbd>Alt+F</kbd><span data-i18n="shortcut_focus_search">Focus Search</span></div>
+          <div class="shortcut-item"><kbd>Alt+S</kbd><span data-i18n="shortcut_advanced_search">Advanced Search</span></div>
+          <div class="shortcut-item"><kbd>Alt+P</kbd><span data-i18n="shortcut_settings">Settings</span></div>
+          <div class="shortcut-item"><kbd>Alt+R</kbd><span data-i18n="shortcut_rescan">Re-scan</span></div>
+          <div class="shortcut-item"><kbd>Alt+E</kbd><span data-i18n="shortcut_select_folder">Select Folder</span></div>
+          <div class="shortcut-item"><kbd>Esc</kbd><span data-i18n="shortcut_close">Close</span></div>
+          <div class="shortcut-item"><kbd>↓</kbd><span data-i18n="shortcut_nav_down">Next result</span></div>
+          <div class="shortcut-item"><kbd>↑</kbd><span data-i18n="shortcut_nav_up">Previous result</span></div>
+          <div class="shortcut-item"><kbd>Space</kbd><span data-i18n="shortcut_copy">Copy Label ID</span></div>
+          <div class="shortcut-item"><kbd>Enter</kbd><span data-i18n="shortcut_details">Open details</span></div>
+          <div class="shortcut-item"><kbd>Ctrl+Z</kbd><span data-i18n="shortcut_undo">Undo selection</span></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-close-shortcuts" class="btn btn-primary" data-i18n="btn_close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Scripts -->
+  <script src="libs/flexsearch.bundle.min.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

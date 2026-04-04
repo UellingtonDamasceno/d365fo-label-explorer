@@ -1,0 +1,23 @@
+# 🚫 Gitignore: D365FO Label Explorer
+
+# Documentação e Design (Não subir para ramificações de Deploy)
+specs/
+knowledge/
+bugs/
+util/
+plans/
+copilot-instructions.md
+
+# Configurações Locais e Secrets
+.env
+.DS_Store
+*.log
+
+# IDEs
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Playwright (testes)
+.playwright-mcp/
