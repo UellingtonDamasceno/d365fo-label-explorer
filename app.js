@@ -40,6 +40,10 @@ const state = {
     type: null, // models, cultures, requiredCultures
     search: ''
   },
+  languageFilter: {
+    selectedLanguages: new Set(), // Set of selected cultures for global filtering
+    search: ''
+  },
   availableFilters: {
     cultures: [],
     models: []
@@ -47,7 +51,7 @@ const state = {
   results: [],
   groupedResults: [], // For deduplicated display
   virtualScroll: {
-    itemHeight: 150, // Card height (140px) + gap (10px)
+    itemHeight: 160, // Calculated dynamically from CSS var(--card-height) + gap
     bufferSize: 5,
     scrollTop: 0,
     visibleCount: 0
@@ -96,13 +100,14 @@ async function init() {
   const hasExistingData = await db.hasData();
   
   if (hasExistingData) {
-    // Load existing data with splash feedback
+    // Load existing data with splash feedback (streaming to avoid OOM)
     updateSplashStatus('Loading saved labels from database...');
-    const labels = await db.getAllLabels();
-    state.totalLabels = labels.length;
+    const totalLabels = await db.getLabelCount();
+    state.totalLabels = totalLabels;
     
-    updateSplashStatus(`Building search index (${labels.length.toLocaleString()} labels)...`);
-    searchService.indexAll(labels);
+    updateSplashStatus(`Building search index (${totalLabels.toLocaleString()} labels)...`);
+    // Stream labels from IndexedDB to FlexSearch in chunks
+    await buildSearchIndexStreamingWithSplash();
     
     updateSplashStatus('Loading preferences and filters...');
     const lastIndexed = await db.getMetadata('lastIndexed');
@@ -162,8 +167,8 @@ function cacheElements() {
     discoverySummary: document.getElementById('discovery-summary'),
     modelsList: document.getElementById('models-list'),
     btnToggleSelection: document.getElementById('btn-toggle-selection'),
-    globalLanguageSelect: document.getElementById('global-language-select'),
-    btnApplyGlobalLanguage: document.getElementById('btn-apply-global-language'),
+    btnOpenLanguageFilter: document.getElementById('btn-open-language-filter'),
+    languageFilterCount: document.getElementById('language-filter-count'),
     selectionInfo: document.getElementById('selection-info'),
     btnStartIndexing: document.getElementById('btn-start-indexing'),
     btnCancelRescan: document.getElementById('btn-cancel-rescan'),
@@ -171,6 +176,14 @@ function cacheElements() {
     indexingProgress: document.getElementById('indexing-progress'),
     progressFill: document.getElementById('progress-fill'),
     indexingStatus: document.getElementById('indexing-status'),
+    
+    // Language Filter Modal
+    languageFilterModal: document.getElementById('language-filter-modal'),
+    btnCloseLanguageFilterModal: document.getElementById('btn-close-language-filter-modal'),
+    languageFilterSearch: document.getElementById('language-filter-search'),
+    btnToggleAllLanguages: document.getElementById('btn-toggle-all-languages'),
+    languageFilterList: document.getElementById('language-filter-list'),
+    btnApplyLanguageFilter: document.getElementById('btn-apply-language-filter'),
     
     // Header
     labelCountBadge: document.getElementById('label-count-badge'),
@@ -255,9 +268,15 @@ function setupEventListeners() {
   
   // Dashboard - Smart toggle selection button
   elements.btnToggleSelection?.addEventListener('click', handleToggleSelection);
-  elements.btnApplyGlobalLanguage?.addEventListener('click', handleApplyGlobalLanguage);
+  elements.btnOpenLanguageFilter?.addEventListener('click', openLanguageFilterModal);
   elements.btnStartIndexing?.addEventListener('click', handleStartIndexing);
   elements.btnCancelRescan?.addEventListener('click', handleCancelRescan);
+  
+  // Language Filter Modal
+  elements.btnCloseLanguageFilterModal?.addEventListener('click', closeLanguageFilterModal);
+  elements.btnToggleAllLanguages?.addEventListener('click', toggleAllLanguagesFilter);
+  elements.btnApplyLanguageFilter?.addEventListener('click', applyLanguageFilter);
+  elements.languageFilterSearch?.addEventListener('input', debounce(renderLanguageFilterList, 150));
   
   // Header
   elements.btnRescan?.addEventListener('click', handleRescan);
@@ -583,6 +602,12 @@ async function handleChangeFolder() {
 async function startDiscovery() {
   state.stage = 'DISCOVERING';
   
+  // Ensure correct overlays are visible for scanning feedback
+  // Hide discovery dashboard and main app, show onboarding with scan progress
+  elements.discoveryDashboard?.classList.add('hidden');
+  elements.app?.classList.add('hidden');
+  elements.onboardingOverlay?.classList.remove('hidden');
+  
   // Show progress
   elements.btnSelectFolder?.classList.add('hidden');
   elements.scanProgress?.classList.remove('hidden');
@@ -661,8 +686,11 @@ function showDiscoveryDashboard() {
   // Update summary using i18n
   elements.discoverySummary.innerHTML = t('discovery_summary', { models: totalModels, files: totalFiles });
 
-  // Populate global language selector
-  populateGlobalLanguageSelector();
+  // Initialize language filter with all languages selected
+  state.languageFilter.selectedLanguages.clear();
+  const uniqueCultures = [...new Set(state.discoveryData.flatMap(m => m.cultures.map(c => c.culture)))];
+  uniqueCultures.forEach(c => state.languageFilter.selectedLanguages.add(c));
+  updateLanguageFilterCount();
   
   // Render models list with checkboxes
   renderModelsListWithSelection();
@@ -676,39 +704,141 @@ function showDiscoveryDashboard() {
 }
 
 /**
- * Populate global language selector on discovery dashboard
+ * Open language filter modal for multi-select
  */
-function populateGlobalLanguageSelector() {
-  if (!elements.globalLanguageSelect) return;
+function openLanguageFilterModal() {
+  // Collect all unique cultures from discovery data
   const uniqueCultures = [...new Set(state.discoveryData.flatMap(m => m.cultures.map(c => c.culture)))].sort();
-  elements.globalLanguageSelect.innerHTML = `
-    <option value="">${t('select_language')}</option>
-    ${uniqueCultures.map(c => `<option value="${escapeAttr(c)}">${formatLanguageDisplay(c)}</option>`).join('')}
-  `;
+  
+  // Initialize selected languages if empty (select all by default)
+  if (state.languageFilter.selectedLanguages.size === 0) {
+    uniqueCultures.forEach(c => state.languageFilter.selectedLanguages.add(c));
+  }
+  
+  state.languageFilter.search = '';
+  elements.languageFilterSearch.value = '';
+  
+  renderLanguageFilterList();
+  updateLanguageFilterCount();
+  elements.languageFilterModal?.classList.remove('hidden');
 }
 
 /**
- * Apply one global language across all models in discovery
+ * Close language filter modal
  */
-function handleApplyGlobalLanguage() {
-  const selectedCulture = elements.globalLanguageSelect?.value;
-  if (!selectedCulture) {
+function closeLanguageFilterModal() {
+  elements.languageFilterModal?.classList.add('hidden');
+}
+
+/**
+ * Render the language filter list with search
+ */
+function renderLanguageFilterList() {
+  const search = (elements.languageFilterSearch?.value || '').toLowerCase();
+  const uniqueCultures = [...new Set(state.discoveryData.flatMap(m => m.cultures.map(c => c.culture)))].sort();
+  
+  const filtered = uniqueCultures.filter(c => 
+    c.toLowerCase().includes(search) ||
+    formatLanguageDisplay(c).toLowerCase().includes(search)
+  );
+  
+  elements.languageFilterList.innerHTML = filtered.map(culture => {
+    const isSelected = state.languageFilter.selectedLanguages.has(culture);
+    return `
+      <label class="selector-item">
+        <input type="checkbox" value="${escapeAttr(culture)}" ${isSelected ? 'checked' : ''}>
+        <span>${formatLanguageDisplay(culture)}</span>
+      </label>
+    `;
+  }).join('');
+  
+  // Add change listeners
+  elements.languageFilterList.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+    cb.addEventListener('change', (e) => {
+      if (e.target.checked) {
+        state.languageFilter.selectedLanguages.add(e.target.value);
+      } else {
+        state.languageFilter.selectedLanguages.delete(e.target.value);
+      }
+      updateToggleAllLanguagesButton();
+      updateLanguageFilterCount();
+    });
+  });
+  
+  updateToggleAllLanguagesButton();
+}
+
+/**
+ * Toggle all languages in filter
+ */
+function toggleAllLanguagesFilter() {
+  const uniqueCultures = [...new Set(state.discoveryData.flatMap(m => m.cultures.map(c => c.culture)))];
+  const allSelected = uniqueCultures.every(c => state.languageFilter.selectedLanguages.has(c));
+  
+  if (allSelected) {
+    state.languageFilter.selectedLanguages.clear();
+  } else {
+    uniqueCultures.forEach(c => state.languageFilter.selectedLanguages.add(c));
+  }
+  
+  renderLanguageFilterList();
+  updateLanguageFilterCount();
+}
+
+/**
+ * Update the toggle all languages button text
+ */
+function updateToggleAllLanguagesButton() {
+  const uniqueCultures = [...new Set(state.discoveryData.flatMap(m => m.cultures.map(c => c.culture)))];
+  const allSelected = uniqueCultures.every(c => state.languageFilter.selectedLanguages.has(c));
+  
+  if (elements.btnToggleAllLanguages) {
+    elements.btnToggleAllLanguages.innerHTML = allSelected ? 
+      `<span data-i18n="btn_deselect_all">${t('btn_deselect_all')}</span>` : 
+      `<span data-i18n="btn_select_all">${t('btn_select_all')}</span>`;
+  }
+}
+
+/**
+ * Update the language filter count badge
+ */
+function updateLanguageFilterCount() {
+  if (elements.languageFilterCount) {
+    elements.languageFilterCount.textContent = state.languageFilter.selectedLanguages.size;
+  }
+}
+
+/**
+ * Apply language filter - keep only selected languages
+ */
+function applyLanguageFilter() {
+  if (state.languageFilter.selectedLanguages.size === 0) {
     showInfo(t('toast_select_language_first'));
     return;
   }
-
+  
   saveSelectionHistory();
-
+  
+  // Update selection state based on selected languages
   state.discoveryData.forEach(model => {
+    let hasAnySelectedLanguage = false;
+    
     model.cultures.forEach(culture => {
       const key = `${model.model}|||${culture.culture}`;
-      state.selectionState.set(key, culture.culture === selectedCulture);
+      const isLanguageSelected = state.languageFilter.selectedLanguages.has(culture.culture);
+      state.selectionState.set(key, isLanguageSelected);
+      if (isLanguageSelected) hasAnySelectedLanguage = true;
     });
+    
+    // If model has no selected languages, ensure all are unselected (already done above)
   });
-
+  
   renderModelsListWithSelection();
   updateSelectionInfo();
-  showInfo(`Applied ${selectedCulture} to all models`);
+  updateToggleSelectionButton();
+  closeLanguageFilterModal();
+  
+  showInfo(t('toast_language_filter_applied', { count: state.languageFilter.selectedLanguages.size }));
 }
 
 /**
@@ -1028,7 +1158,8 @@ function handleUndoSelection() {
 }
 
 /**
- * Handle start indexing
+ * Handle start indexing - TURBO INGESTION (SPEC-16)
+ * Uses parallel workers and batch processing for high performance
  */
 async function handleStartIndexing() {
   state.stage = 'INDEXING';
@@ -1043,110 +1174,285 @@ async function handleStartIndexing() {
   await db.clearLabels();
   searchService.clearSearch();
   
-  // Create parser worker
-  const parserWorker = new Worker(
-    new URL('./workers/parser.worker.js', import.meta.url),
-    { type: 'module' }
-  );
-  
   // Filter selected files only
   const { selectedData, totalFiles } = getSelectedDiscoveryData();
   
   if (totalFiles === 0) {
-    showError('No files selected for indexing');
+    showError(t('toast_no_files_selected'));
     elements.btnStartIndexing?.classList.remove('hidden');
     elements.btnChangeFolder?.classList.remove('hidden');
     elements.indexingProgress?.classList.add('hidden');
     return;
   }
   
-  // Track progress
+  // Performance tracking
+  const startTime = performance.now();
   let processedFiles = 0;
-  let allLabels = [];
-  let skippedLabels = 0;
+  let totalLabels = 0;
+  let errors = [];
   
-  // Process each selected model
+  // Determine optimal worker count based on CPU cores (max 6 for stability)
+  const workerCount = Math.min(navigator.hardwareConcurrency || 4, 6);
+  console.log(`🚀 SPEC-18 TURBO INGESTION: ${workerCount} workers for ${totalFiles} files`);
+  console.log(`📦 Architecture: Main Thread passes FileHandles → Workers read+parse+save to IndexedDB`);
+  console.log(`🔒 Zero-Copy: Main Thread NEVER reads file content, NEVER receives label arrays`);
+  
+  // Update UI function (called only with progress data, never label data)
+  function updateProgress() {
+    const progress = Math.round((processedFiles / totalFiles) * 100);
+    const elapsed = (performance.now() - startTime) / 1000;
+    const labelsPerSec = elapsed > 0 ? Math.round(totalLabels / elapsed) : 0;
+    const memoryInfo = performance.memory ? 
+      `| RAM: ${Math.round(performance.memory.usedJSHeapSize / 1048576)}MB` : '';
+    
+    elements.progressFill.style.width = `${progress}%`;
+    elements.indexingStatus.innerHTML = `
+      Indexing... ${processedFiles}/${totalFiles} files | ${totalLabels.toLocaleString()} labels
+      <br><small style="color: var(--text-dark)">${labelsPerSec.toLocaleString()} labels/sec ${memoryInfo}</small>
+    `;
+  }
+  
+  // Collect all file tasks with FileHandles
+  const fileTasks = [];
   for (const model of selectedData) {
     for (const culture of model.cultures) {
       for (const file of culture.files) {
-        try {
-          // Read file
-          const content = await fileAccess.readFileAsText(file.handle);
-          
-          // Parse file
-          const result = await new Promise((resolve, reject) => {
-            const timeoutId = setTimeout(() => reject(new Error('Parse timeout')), 30000);
-            
-            parserWorker.onmessage = (e) => {
-              clearTimeout(timeoutId);
-              if (e.data.type === 'ERROR') {
-                reject(new Error(e.data.error));
-              } else {
-                resolve(e.data);
-              }
-            };
-            
-            parserWorker.postMessage({
-              type: 'PARSE',
-              content,
-              metadata: {
-                model: model.model,
-                culture: culture.culture,
-                prefix: file.prefix,
-                sourcePath: `${model.model}/${culture.culture}/${file.name}`
-              },
-              id: file.name
-            });
-          });
-          
-          // Collect labels
-          allLabels.push(...result.labels);
-          skippedLabels += result.stats.skippedLines;
-          
-        } catch (err) {
-          console.error(`Error processing ${file.name}:`, err);
-          skippedLabels++;
-        }
-        
-        // Update progress
-        processedFiles++;
-        const progress = Math.round((processedFiles / totalFiles) * 100);
-        elements.progressFill.style.width = `${progress}%`;
-        elements.indexingStatus.textContent = 
-          `Indexing... ${processedFiles}/${totalFiles} files (${allLabels.length} labels)`;
+        fileTasks.push({
+          handle: file.handle, // FileSystemFileHandle - passed to Worker!
+          metadata: {
+            model: model.model,
+            culture: culture.culture,
+            prefix: file.prefix,
+            sourcePath: `${model.model}/${culture.culture}/${file.name}`
+          }
+        });
       }
     }
   }
   
-  // Terminate worker
-  parserWorker.terminate();
+  // Create worker pool
+  const workers = [];
   
-  // Save to database
+  for (let i = 0; i < workerCount; i++) {
+    const worker = new Worker(
+      new URL('./workers/indexer.worker.js', import.meta.url),
+      { type: 'module' }
+    );
+    workers.push(worker);
+  }
+  
+  // Distribute files among workers evenly
+  // Each worker gets a chunk of FileHandles to process
+  const filesPerWorker = Math.ceil(fileTasks.length / workerCount);
+  const workerPromises = [];
+  
+  for (let i = 0; i < workerCount; i++) {
+    const workerFiles = fileTasks.slice(i * filesPerWorker, (i + 1) * filesPerWorker);
+    
+    if (workerFiles.length === 0) continue;
+    
+    const worker = workers[i];
+    
+    const workerPromise = new Promise((resolve, reject) => {
+      worker.onmessage = (e) => {
+        const { type } = e.data;
+        
+        switch (type) {
+          case 'FILE_COMPLETE':
+            // Worker completed a file - update progress
+            totalLabels += e.data.labels;
+            processedFiles++;
+            updateProgress();
+            break;
+            
+          case 'BATCH_SAVED':
+            // Large file progress (optional feedback)
+            break;
+            
+          case 'COMPLETE':
+            // Worker finished all its files
+            if (e.data.errors?.length > 0) {
+              errors.push(...e.data.errors);
+            }
+            worker.terminate();
+            resolve({
+              labels: e.data.totalLabels,
+              files: e.data.processedFiles
+            });
+            break;
+        }
+      };
+      
+      worker.onerror = (e) => {
+        console.error('Worker error:', e);
+        worker.terminate();
+        reject(e);
+      };
+      
+      // SPEC-18: Pass FileHandles to Worker - Main Thread NEVER reads file content!
+      // Worker will: 1) Open file from handle, 2) Stream-parse, 3) Save to IndexedDB
+      worker.postMessage({
+        type: 'PROCESS_FILES_HANDLES',
+        files: workerFiles
+      });
+    });
+    
+    workerPromises.push(workerPromise);
+  }
+  
+  // Wait for all workers to complete
+  try {
+    await Promise.all(workerPromises);
+  } catch (err) {
+    console.error('Indexing error:', err);
+    showError(t('toast_indexing_error') || 'Indexing failed');
+    workers.forEach(w => { try { w.terminate(); } catch (e) {} });
+    elements.btnStartIndexing?.classList.remove('hidden');
+    elements.btnChangeFolder?.classList.remove('hidden');
+    elements.indexingProgress?.classList.add('hidden');
+    return;
+  }
+  
+  // Calculate final stats
+  const totalElapsed = (performance.now() - startTime) / 1000;
+  const finalLabelsPerSec = Math.round(totalLabels / totalElapsed);
+  
+  console.log(`✅ TURBO INGESTION complete:`, {
+    totalLabels,
+    totalFiles: processedFiles,
+    elapsed: `${totalElapsed.toFixed(1)}s`,
+    labelsPerSec: finalLabelsPerSec,
+    workersUsed: workerCount,
+    errors: errors.length
+  });
+  
+  // Update metadata (no label data needed - workers already saved to DB)
   elements.indexingStatus.textContent = t('saving_database');
-  await db.addLabels(allLabels);
-  
-  // Update metadata
   await db.setMetadata('lastIndexed', Date.now());
-  await db.setMetadata('totalLabels', allLabels.length);
+  await db.setMetadata('totalLabels', totalLabels);
   
-  // Index for search
+  // Build search index using streaming from IndexedDB
+  // This loads labels in chunks to avoid memory spike
   elements.indexingStatus.textContent = t('building_index');
-  searchService.indexAll(allLabels);
+  await buildSearchIndexStreaming();
   
-  state.totalLabels = allLabels.length;
-  state.previousStage = null; // Clear previous stage after successful indexing
+  state.totalLabels = totalLabels;
+  state.previousStage = null;
   
-  console.log(`✅ Indexing complete: ${allLabels.length} labels indexed, ${skippedLabels} skipped`);
+  const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+  console.log(`✅ Full indexing pipeline complete: ${totalLabels} labels in ${elapsed}s`);
   
   // Show main interface
   showMainInterface();
   
   // Show summary
-  if (skippedLabels > 0) {
-    showInfo(t('toast_indexing_skipped', { count: skippedLabels }));
+  if (errors.length > 0) {
+    showInfo(t('toast_indexing_skipped', { count: errors.length }));
   } else {
-    showSuccess(t('toast_indexing_complete', { count: allLabels.length }));
+    showSuccess(t('toast_indexing_complete', { count: totalLabels }));
   }
+}
+
+/**
+ * Build search index using streaming from IndexedDB
+ * Avoids loading all labels into memory at once
+ */
+async function buildSearchIndexStreaming() {
+  const CHUNK_SIZE = 10000;
+  let offset = 0;
+  let hasMore = true;
+  
+  // Use cursor-based streaming from IndexedDB
+  const dbInstance = await db.initDB();
+  
+  return new Promise((resolve, reject) => {
+    const tx = dbInstance.transaction('labels', 'readonly');
+    const store = tx.objectStore('labels');
+    const request = store.openCursor();
+    let chunk = [];
+    let totalIndexed = 0;
+    
+    request.onsuccess = (event) => {
+      const cursor = event.target.result;
+      
+      if (cursor) {
+        chunk.push(cursor.value);
+        
+        // Index in chunks to avoid memory pressure
+        if (chunk.length >= CHUNK_SIZE) {
+          searchService.indexAll(chunk);
+          totalIndexed += chunk.length;
+          chunk = [];
+          
+          // Update progress
+          elements.indexingStatus.textContent = `${t('building_index')} (${totalIndexed.toLocaleString()})`;
+        }
+        
+        cursor.continue();
+      } else {
+        // Final chunk
+        if (chunk.length > 0) {
+          searchService.indexAll(chunk);
+          totalIndexed += chunk.length;
+        }
+        
+        console.log(`📊 Search index built: ${totalIndexed} labels indexed`);
+        resolve();
+      }
+    };
+    
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * Build search index with splash screen updates
+ * Same as buildSearchIndexStreaming but updates splash instead of indexingStatus
+ */
+async function buildSearchIndexStreamingWithSplash() {
+  const CHUNK_SIZE = 10000;
+  
+  // Use cursor-based streaming from IndexedDB
+  const dbInstance = await db.initDB();
+  
+  return new Promise((resolve, reject) => {
+    const tx = dbInstance.transaction('labels', 'readonly');
+    const store = tx.objectStore('labels');
+    const request = store.openCursor();
+    let chunk = [];
+    let totalIndexed = 0;
+    
+    request.onsuccess = (event) => {
+      const cursor = event.target.result;
+      
+      if (cursor) {
+        chunk.push(cursor.value);
+        
+        // Index in chunks to avoid memory pressure
+        if (chunk.length >= CHUNK_SIZE) {
+          searchService.indexAll(chunk);
+          totalIndexed += chunk.length;
+          chunk = [];
+          
+          // Update splash progress
+          updateSplashStatus(`Building search index (${totalIndexed.toLocaleString()} indexed)...`);
+        }
+        
+        cursor.continue();
+      } else {
+        // Final chunk
+        if (chunk.length > 0) {
+          searchService.indexAll(chunk);
+          totalIndexed += chunk.length;
+        }
+        
+        console.log(`📊 Search index built: ${totalIndexed} labels indexed (streaming)`);
+        resolve();
+      }
+    };
+    
+    request.onerror = () => reject(request.error);
+  });
 }
 
 /**
@@ -1180,19 +1486,19 @@ async function handleRescan() {
  * Load existing data
  */
 async function loadExistingData() {
-  console.log('📦 Loading existing data...');
+  console.log('📦 Loading existing data (streaming)...');
   
-  // Get labels from database
-  const labels = await db.getAllLabels();
-  state.totalLabels = labels.length;
+  // Get total count without loading all labels
+  const totalLabels = await db.getLabelCount();
+  state.totalLabels = totalLabels;
   
-  // Build search index
-  searchService.indexAll(labels);
+  // Build search index using streaming to avoid memory spike
+  await buildSearchIndexStreaming();
   
   // Get last indexed time
   const lastIndexed = await db.getMetadata('lastIndexed');
   
-  console.log(`✅ Loaded ${labels.length} labels from database`);
+  console.log(`✅ Loaded ${totalLabels} labels from database (streamed)`);
   
   // Show main interface
   showMainInterface(lastIndexed);
@@ -1209,7 +1515,14 @@ function showMainInterface(lastIndexed = null) {
   
   if (lastIndexed) {
     const date = new Date(lastIndexed);
-    elements.lastIndexed.textContent = `Last indexed: ${date.toLocaleDateString()}`;
+    const formattedDate = date.toLocaleString(undefined, { 
+      day: '2-digit', 
+      month: '2-digit', 
+      year: 'numeric',
+      hour: '2-digit', 
+      minute: '2-digit' 
+    });
+    elements.lastIndexed.textContent = t('last_indexed', { date: formattedDate });
   }
   
   // Populate filters
@@ -1603,10 +1916,20 @@ function showNoResults() {
 }
 
 /**
- * Calculate virtual scroll parameters
+ * Calculate virtual scroll parameters dynamically from CSS
  */
 function calculateVirtualScrollParams() {
   const viewportHeight = elements.resultsViewport?.clientHeight || 600;
+  
+  // Get computed CSS variables for accurate height calculation
+  const rootStyles = getComputedStyle(document.documentElement);
+  const cardHeight = parseFloat(rootStyles.getPropertyValue('--card-height')) || 9.375; // rem
+  const cardGap = parseFloat(rootStyles.getPropertyValue('--card-gap')) || 0.625; // rem
+  const fontSize = parseFloat(rootStyles.fontSize) || 16; // px
+  
+  // Convert rem to px
+  state.virtualScroll.itemHeight = Math.ceil((cardHeight + cardGap) * fontSize);
+  
   state.virtualScroll.visibleCount = Math.ceil(viewportHeight / state.virtualScroll.itemHeight) + 
     (state.virtualScroll.bufferSize * 2);
 }

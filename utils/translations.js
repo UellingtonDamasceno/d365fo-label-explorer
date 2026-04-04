@@ -127,6 +127,14 @@ export const translations = {
     toast_scan_error: 'Failed to scan folder. Please try again.',
     toast_no_labels_found: 'No D365FO label files found. Make sure you selected the correct folder.',
     toast_db_init_error: 'Failed to initialize database. Please check your browser settings.',
+    toast_language_filter_applied: 'Language filter applied ({count} languages)',
+    
+    // Language Filter Modal
+    filter_languages: 'Filter Languages',
+    filter_languages_title: '🌐 Filter Languages',
+    filter_languages_hint: 'Select which languages to keep across all models. Models without any selected languages will be unchecked.',
+    search_languages: 'Search languages...',
+    btn_apply_filter: 'Apply Filter',
     
     // Keyboard shortcuts legend
     shortcuts_title: 'Keyboard Shortcuts',
@@ -266,6 +274,14 @@ export const translations = {
     toast_scan_error: 'Falha ao escanear a pasta. Tente novamente.',
     toast_no_labels_found: 'Nenhum arquivo de label D365FO encontrado. Verifique se selecionou a pasta correta.',
     toast_db_init_error: 'Falha ao inicializar o banco de dados. Verifique as configurações do navegador.',
+    toast_language_filter_applied: 'Filtro de idiomas aplicado ({count} idiomas)',
+    
+    // Language Filter Modal
+    filter_languages: 'Filtrar Idiomas',
+    filter_languages_title: '🌐 Filtrar Idiomas',
+    filter_languages_hint: 'Selecione quais idiomas manter em todos os modelos. Modelos sem idiomas selecionados serão desmarcados.',
+    search_languages: 'Buscar idiomas...',
+    btn_apply_filter: 'Aplicar Filtro',
     
     // Keyboard shortcuts legend
     shortcuts_title: 'Atalhos de Teclado',

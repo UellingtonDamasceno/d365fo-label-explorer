@@ -53,11 +53,8 @@
         <button id="btn-toggle-selection" class="btn btn-outline btn-sm">
           ✓ <span data-i18n="btn_select_all">Select All</span>
         </button>
-        <select id="global-language-select" class="global-language-select">
-          <option value="" data-i18n="select_language">Select language...</option>
-        </select>
-        <button id="btn-apply-global-language" class="btn btn-outline btn-sm">
-          <span data-i18n="btn_apply_global_language">Apply Global Language</span>
+        <button id="btn-open-language-filter" class="btn btn-outline btn-sm">
+          🌐 <span data-i18n="filter_languages">Filter Languages</span> (<span id="language-filter-count">0</span>)
         </button>
         <span id="selection-info" class="selection-info">0 files selected</span>
       </div>
@@ -143,23 +140,26 @@
           </div>
         </div>
 
-        <div class="sidebar-group">
-          <div class="group-header">
-            <span data-i18n="results">Results</span>
-            <span id="results-count" class="count-badge">0</span>
-          </div>
-          
-          <!-- Sorting Selector -->
-          <div class="sort-container">
-            <label for="sort-select" class="sort-label" data-i18n="sort_label">Sort:</label>
-            <select id="sort-select" class="sort-select">
-              <option value="relevance" data-i18n="sort_relevance">Relevance</option>
-              <option value="labelId-asc" data-i18n="sort_labelid_asc">Label ID (A-Z)</option>
-              <option value="labelId-desc" data-i18n="sort_labelid_desc">Label ID (Z-A)</option>
-              <option value="text-asc" data-i18n="sort_text_asc">Text (A-Z)</option>
-              <option value="text-desc" data-i18n="sort_text_desc">Text (Z-A)</option>
-              <option value="model-asc" data-i18n="sort_model_asc">Model (A-Z)</option>
-            </select>
+        <!-- Scrollable content area -->
+        <div class="sidebar-content">
+          <div class="sidebar-group">
+            <div class="group-header">
+              <span data-i18n="results">Results</span>
+              <span id="results-count" class="count-badge">0</span>
+            </div>
+            
+            <!-- Sorting Selector -->
+            <div class="sort-container">
+              <label for="sort-select" class="sort-label" data-i18n="sort_label">Sort:</label>
+              <select id="sort-select" class="sort-select">
+                <option value="relevance" data-i18n="sort_relevance">Relevance</option>
+                <option value="labelId-asc" data-i18n="sort_labelid_asc">Label ID (A-Z)</option>
+                <option value="labelId-desc" data-i18n="sort_labelid_desc">Label ID (Z-A)</option>
+                <option value="text-asc" data-i18n="sort_text_asc">Text (A-Z)</option>
+                <option value="text-desc" data-i18n="sort_text_desc">Text (Z-A)</option>
+                <option value="model-asc" data-i18n="sort_model_asc">Model (A-Z)</option>
+              </select>
+            </div>
           </div>
         </div>
       </aside>
@@ -374,6 +374,27 @@
 
   <!-- Toast Container -->
   <div id="toast-container" class="toast-container"></div>
+
+  <!-- Discovery Language Filter Modal -->
+  <div id="language-filter-modal" class="modal-overlay hidden">
+    <div class="modal-content selector-modal-content">
+      <div class="modal-header">
+        <h3 data-i18n="filter_languages_title">🌐 Filter Languages</h3>
+        <button id="btn-close-language-filter-modal" class="btn-close">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="filter-hint" data-i18n="filter_languages_hint">Select which languages to keep across all models. Models without any selected languages will be unchecked.</p>
+        <div class="selector-toolbar">
+          <input id="language-filter-search" class="selector-search" type="text" data-i18n-placeholder="search_languages" placeholder="Search languages...">
+          <button id="btn-toggle-all-languages" class="btn btn-outline btn-sm" data-i18n="btn_toggle_select_all">Select All</button>
+        </div>
+        <div id="language-filter-list" class="selector-list"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-apply-language-filter" class="btn btn-primary" data-i18n="btn_apply_filter">Apply Filter</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Scripts -->
   <script src="libs/flexsearch.bundle.min.js"></script>

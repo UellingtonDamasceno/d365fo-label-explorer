@@ -287,4 +287,12 @@ export async function hasData() {
   return count > 0;
 }
 
+/**
+ * Get the raw database instance (for advanced operations)
+ * @returns {Promise<IDBDatabase>}
+ */
+export async function getDB() {
+  return initDB();
+}
+
 export { STORES, DB_NAME };

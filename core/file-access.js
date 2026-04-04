@@ -129,7 +129,8 @@ export async function walkDirectory(dirHandle, onEntry, basePath = '') {
 }
 
 /**
- * Find all AxLabelFile directories
+ * Find all AxLabelFile directories - TURBO DISCOVERY (SPEC-16)
+ * Uses parallel processing for first-level directories
  * @param {FileSystemDirectoryHandle} rootHandle 
  * @param {Function} onProgress - Progress callback
  * @returns {Promise<Array>} - Array of { model, labelResources }
@@ -137,44 +138,68 @@ export async function walkDirectory(dirHandle, onEntry, basePath = '') {
 export async function discoverLabelFiles(rootHandle, onProgress = () => {}) {
   const models = [];
   let scannedDirs = 0;
-
-  async function scanDir(handle, parentPath, parentName) {
-    scannedDirs++;
-    onProgress({ scannedDirs, foundModels: models.length });
-
-    for await (const entry of handle.values()) {
-      if (entry.kind === 'directory') {
-        const entryPath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
+  let foundModels = 0;
+  
+  // First pass: collect all first-level directories (model candidates)
+  const firstLevelDirs = [];
+  for await (const entry of rootHandle.values()) {
+    if (entry.kind === 'directory') {
+      firstLevelDirs.push(entry);
+    }
+  }
+  
+  console.log(`🔍 Turbo Discovery: scanning ${firstLevelDirs.length} top-level directories`);
+  
+  // Process directories in parallel batches
+  const BATCH_SIZE = 10; // Process 10 directories at a time
+  
+  async function scanModelDir(modelDir) {
+    // Look specifically for AxLabelFile subdirectory
+    try {
+      for await (const entry of modelDir.values()) {
+        scannedDirs++;
         
-        // Check if this is AxLabelFile directory
-        if (entry.name === 'AxLabelFile') {
-          // Parent folder name is the model name
-          const modelName = parentName || rootHandle.name;
-          
-          // Look for LabelResources
+        if (entry.kind === 'directory' && entry.name === 'AxLabelFile') {
           const labelResourcesHandle = await findLabelResources(entry);
           if (labelResourcesHandle) {
             const cultures = await discoverCultures(labelResourcesHandle);
             if (cultures.length > 0) {
-              models.push({
-                model: modelName,
+              foundModels++;
+              return {
+                model: modelDir.name,
                 axLabelFileHandle: entry,
                 labelResourcesHandle,
                 cultures,
                 fileCount: cultures.reduce((sum, c) => sum + c.files.length, 0)
-              });
+              };
             }
           }
-        } else {
-          // Recurse into subdirectory
-          await scanDir(entry, entryPath, entry.name);
         }
       }
+    } catch (err) {
+      console.warn(`Skipping ${modelDir.name}:`, err.message);
     }
+    return null;
   }
-
-  await scanDir(rootHandle, '', '');
   
+  // Process in parallel batches
+  for (let i = 0; i < firstLevelDirs.length; i += BATCH_SIZE) {
+    const batch = firstLevelDirs.slice(i, i + BATCH_SIZE);
+    
+    const results = await Promise.all(batch.map(dir => scanModelDir(dir)));
+    
+    // Collect valid models
+    for (const result of results) {
+      if (result) {
+        models.push(result);
+      }
+    }
+    
+    // Update progress
+    onProgress({ scannedDirs, foundModels: models.length });
+  }
+  
+  console.log(`✅ Turbo Discovery complete: ${models.length} models found`);
   return models;
 }
 

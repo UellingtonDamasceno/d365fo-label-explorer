@@ -28,7 +28,8 @@ function parseLabels(content, metadata) {
   let skippedLines = 0;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+    // Remove \r if present
+    const line = lines[i].replace(/\r$/, '');
     const trimmedLine = line.trimEnd();
 
     // Skip empty lines
@@ -70,7 +71,7 @@ function parseLabels(content, metadata) {
       // Check if this is a metadata/help line (starts with " ;")
       if (line.startsWith(' ;')) {
         // Extract help text (remove " ;" prefix)
-        const helpText = line.substring(2).trim();
+        const helpText = line.substring(2).trimEnd();
         if (currentLabel.help) {
           currentLabel.help += ' ' + helpText;
         } else {

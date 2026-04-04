@@ -19,7 +19,7 @@ export function initSearch() {
   searchIndex = new FlexSearch.Document({
     document: {
       id: 'id',
-      index: ['text', 'fullId', 'help', 'labelId'],
+      index: ['searchTarget'],
       store: true
     },
     tokenize: 'forward',
@@ -40,7 +40,11 @@ export function indexLabels(labels) {
   }
 
   labels.forEach(label => {
-    searchIndex.add(label);
+    const doc = {
+      ...label,
+      searchTarget: `${label.labelId} ${label.text} ${label.help || ''} ${label.fullId}`
+    };
+    searchIndex.add(doc);
     labelsData.push(label);
   });
 }
@@ -53,7 +57,11 @@ export function indexAll(labels) {
   initSearch();
   
   labels.forEach(label => {
-    searchIndex.add(label);
+    const doc = {
+      ...label,
+      searchTarget: `${label.labelId} ${label.text} ${label.help || ''} ${label.fullId}`
+    };
+    searchIndex.add(doc);
   });
   
   labelsData = [...labels];
