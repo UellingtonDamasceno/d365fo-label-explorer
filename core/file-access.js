@@ -130,91 +130,93 @@ export async function walkDirectory(dirHandle, onEntry, basePath = '') {
 
 /**
  * Find all AxLabelFile directories - TURBO DISCOVERY (SPEC-16)
- * Uses parallel processing for first-level directories
+ * Uses O(1) probing and skips heavy D365FO metadata folders for instant discovery
  * @param {FileSystemDirectoryHandle} rootHandle 
  * @param {Function} onProgress - Progress callback
  * @returns {Promise<Array>} - Array of { model, labelResources }
  */
 export async function discoverLabelFiles(rootHandle, onProgress = () => {}) {
-  const models = [];
   let scannedDirs = 0;
   let foundModels = 0;
   
-  // First pass: collect all first-level directories (model candidates)
-  const firstLevelDirs = [];
-  for await (const entry of rootHandle.values()) {
-    if (entry.kind === 'directory') {
-      firstLevelDirs.push(entry);
-    }
-  }
-  
-  console.log(`🔍 Turbo Discovery: scanning ${firstLevelDirs.length} top-level directories`);
-  
-  // Process directories in parallel batches
-  const BATCH_SIZE = 10; // Process 10 directories at a time
-  
-  async function scanModelDir(modelDir) {
-    // Look specifically for AxLabelFile subdirectory
+  console.log(`🔍 Turbo Discovery: scanning from root ${rootHandle.name}`);
+
+  async function searchForModels(dirHandle, currentDepth, maxDepth) {
+    if (currentDepth > maxDepth) return [];
+    
+    const modelsFound = [];
+    scannedDirs++;
+    
+    // 1. Fast O(1) probe: Does this directory have 'AxLabelFile'?
     try {
-      for await (const entry of modelDir.values()) {
-        scannedDirs++;
-        
-        if (entry.kind === 'directory' && entry.name === 'AxLabelFile') {
-          const labelResourcesHandle = await findLabelResources(entry);
-          if (labelResourcesHandle) {
-            const cultures = await discoverCultures(labelResourcesHandle);
-            if (cultures.length > 0) {
-              foundModels++;
-              return {
-                model: modelDir.name,
-                axLabelFileHandle: entry,
-                labelResourcesHandle,
-                cultures,
-                fileCount: cultures.reduce((sum, c) => sum + c.files.length, 0)
-              };
-            }
-          }
+      const axLabelFileHandle = await dirHandle.getDirectoryHandle('AxLabelFile');
+      // If we didn't throw, we found it!
+      const labelResourcesHandle = await findLabelResources(axLabelFileHandle);
+      if (labelResourcesHandle) {
+        const cultures = await discoverCultures(labelResourcesHandle);
+        if (cultures.length > 0) {
+          foundModels++;
+          modelsFound.push({
+            model: dirHandle.name,
+            axLabelFileHandle,
+            labelResourcesHandle,
+            cultures,
+            fileCount: cultures.reduce((sum, c) => sum + c.files.length, 0)
+          });
+          onProgress({ scannedDirs, foundModels });
+          // We found a model here, no need to recurse deeper inside this model folder
+          return modelsFound;
         }
       }
-    } catch (err) {
-      console.warn(`Skipping ${modelDir.name}:`, err.message);
+    } catch (e) {
+      // AxLabelFile not found here, continue searching children
     }
-    return null;
+
+    // 2. It doesn't have AxLabelFile. Let's check its children.
+    try {
+      const promises = [];
+      for await (const entry of dirHandle.values()) {
+        if (entry.kind === 'directory') {
+          // Skip known heavy metadata folders that definitely don't contain AxLabelFile
+          // This avoids iterating through thousands of XML files in AxClass, AxTable, etc.
+          if (entry.name.startsWith('Ax') || 
+              ['bin', 'Descriptor', 'XppMetadata', 'Resources', 'Reports', 'BuildProject'].includes(entry.name)) {
+            continue;
+          }
+          
+          promises.push(searchForModels(entry, currentDepth + 1, maxDepth));
+        }
+      }
+      
+      const results = await Promise.all(promises);
+      for (const res of results) {
+        modelsFound.push(...res);
+      }
+    } catch (err) {
+      console.warn(`Skipping iteration for ${dirHandle.name}:`, err.message);
+    }
+    
+    return modelsFound;
   }
   
-  // Process in parallel batches
-  for (let i = 0; i < firstLevelDirs.length; i += BATCH_SIZE) {
-    const batch = firstLevelDirs.slice(i, i + BATCH_SIZE);
-    
-    const results = await Promise.all(batch.map(dir => scanModelDir(dir)));
-    
-    // Collect valid models
-    for (const result of results) {
-      if (result) {
-        models.push(result);
-      }
-    }
-    
-    // Update progress
-    onProgress({ scannedDirs, foundModels: models.length });
-  }
+  // Search up to 4 levels deep to support PackagesLocalDirectory/Package/Model/
+  const models = await searchForModels(rootHandle, 0, 4);
   
   console.log(`✅ Turbo Discovery complete: ${models.length} models found`);
   return models;
 }
 
 /**
- * Find LabelResources folder inside AxLabelFile
+ * Find LabelResources folder inside AxLabelFile using O(1) probe
  * @param {FileSystemDirectoryHandle} axLabelFileHandle 
  * @returns {Promise<FileSystemDirectoryHandle|null>}
  */
 async function findLabelResources(axLabelFileHandle) {
-  for await (const entry of axLabelFileHandle.values()) {
-    if (entry.kind === 'directory' && entry.name === 'LabelResources') {
-      return entry;
-    }
+  try {
+    return await axLabelFileHandle.getDirectoryHandle('LabelResources');
+  } catch (e) {
+    return null;
   }
-  return null;
 }
 
 /**
