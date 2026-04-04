@@ -7,6 +7,8 @@ bugs/
 util/
 plans/
 copilot-instructions.md
+master-directives.md
+final-compliance-directive*.md
 
 # Configurações Locais e Secrets
 .env
