@@ -227,6 +227,11 @@ function cacheElements() {
     btnCloseSettingsModal: document.getElementById('btn-close-settings-modal'),
     btnApplySettings: document.getElementById('btn-apply-settings'),
     uiLanguageSelect: document.getElementById('ui-language-select'),
+    // SPEC-19: Hybrid Search Settings
+    settingHybridSearch: document.getElementById('setting-hybrid-search'),
+    settingMaxModels: document.getElementById('setting-max-models'),
+    settingFuzzyThreshold: document.getElementById('setting-fuzzy-threshold'),
+    fuzzyThresholdValue: document.getElementById('fuzzy-threshold-value'),
 
     // Generic Selector Modal
     itemSelectorModal: document.getElementById('item-selector-modal'),
@@ -313,6 +318,14 @@ function setupEventListeners() {
   elements.btnApplyFilters?.addEventListener('click', applyFilters);
   elements.btnApplySettings?.addEventListener('click', applySystemSettings);
   elements.btnClearFilters?.addEventListener('click', clearAllFilters);
+  
+  // SPEC-19: Fuzzy threshold slider live preview
+  elements.settingFuzzyThreshold?.addEventListener('input', (e) => {
+    if (elements.fuzzyThresholdValue) {
+      elements.fuzzyThresholdValue.textContent = e.target.value;
+    }
+  });
+  
   elements.btnOpenModelSelector?.addEventListener('click', () => openItemSelectorModal('models'));
   elements.btnOpenLanguageSelector?.addEventListener('click', () => openItemSelectorModal('cultures'));
   elements.btnOpenRequiredLanguageSelector?.addEventListener('click', () => openItemSelectorModal('requiredCultures'));
@@ -1559,17 +1572,21 @@ function showMainInterface(lastIndexed = null) {
 /**
  * Populate filter options for modal
  */
-function populateFilters() {
-  const stats = searchService.getStats();
-  
-  // Store available filters
-  state.availableFilters.cultures = stats.cultures.sort();
-  state.availableFilters.models = stats.models.sort();
-  
-  // Render modal filters
-  renderModalFilters();
-}
+async function populateFilters() {
+  try {
+    const cultures = await db.getAllCultures();
+    const models = await db.getAllModels();
 
+    // Store available filters
+    state.availableFilters.cultures = cultures;
+    state.availableFilters.models = models;
+
+    // Render modal filters
+    renderModalFilters();
+  } catch (err) {
+    console.error('Error populating filters:', err);
+  }
+}
 /**
  * Render filters in the modal
  */
@@ -1701,9 +1718,9 @@ function normalizeFilterState() {
 }
 
 /**
- * Handle search
+ * Handle search - SPEC-19 Hybrid Search (async)
  */
-function handleSearch() {
+async function handleSearch() {
   const query = state.currentQuery.trim();
   normalizeFilterState();
   
@@ -1717,11 +1734,12 @@ function handleSearch() {
   
   // Build filter options - support multiple cultures/models
   const filterOptions = {
-    exactMatch: state.filters.exactMatch
+    exactMatch: state.filters.exactMatch,
+    limit: 500 // Limit results for performance
   };
   
   // If specific filters are selected, apply them
-  let results = searchService.search(query, filterOptions);
+  let results = await searchService.search(query, filterOptions);
   
   // Apply multi-select filters manually
   if (state.filters.cultures.length > 0) {
@@ -2148,7 +2166,7 @@ function closeAdvancedSearchModal() {
  */
 function openSystemSettingsModal() {
   if (!elements.systemSettingsModal) return;
-  loadDisplaySettingsFromDb().then(() => {
+  loadDisplaySettingsFromDb().then(async () => {
     const formatRadio = document.getElementById(`format-${state.displaySettings.labelFormat}`);
     if (formatRadio) {
       formatRadio.checked = true;
@@ -2159,6 +2177,22 @@ function openSystemSettingsModal() {
     if (elements.uiLanguageSelect) {
       elements.uiLanguageSelect.value = state.displaySettings.uiLanguage || 'auto';
     }
+    
+    // SPEC-19: Load hybrid search settings
+    const searchSettings = searchService.getSettings();
+    if (elements.settingHybridSearch) {
+      elements.settingHybridSearch.checked = searchSettings.enableHybridSearch;
+    }
+    if (elements.settingMaxModels) {
+      elements.settingMaxModels.value = searchSettings.maxModelsInMemory;
+    }
+    if (elements.settingFuzzyThreshold) {
+      elements.settingFuzzyThreshold.value = searchSettings.fuzzyThreshold;
+      if (elements.fuzzyThresholdValue) {
+        elements.fuzzyThresholdValue.textContent = searchSettings.fuzzyThreshold;
+      }
+    }
+    
     elements.systemSettingsModal.classList.remove('hidden');
   });
 }
@@ -2190,7 +2224,7 @@ function closeShortcutsModal() {
 /**
  * Apply system settings from modal
  */
-function applySystemSettings() {
+async function applySystemSettings() {
   const formatRadios = document.querySelectorAll('input[name="labelFormat"]');
   formatRadios.forEach(radio => {
     if (radio.checked) {
@@ -2210,6 +2244,15 @@ function applySystemSettings() {
   // Update i18n interface language
   setLanguage(state.displaySettings.uiLanguage);
   updateInterfaceText();
+
+  // SPEC-19: Save hybrid search settings
+  const searchSettings = {
+    enableHybridSearch: elements.settingHybridSearch?.checked ?? true,
+    maxModelsInMemory: parseInt(elements.settingMaxModels?.value) || 5,
+    fuzzyThreshold: parseFloat(elements.settingFuzzyThreshold?.value) || 0.2
+  };
+  await searchService.saveSettings(searchSettings);
+  console.log('🔍 Search settings updated:', searchSettings);
 
   saveDisplaySettingsToDb();
   closeSystemSettingsModal();

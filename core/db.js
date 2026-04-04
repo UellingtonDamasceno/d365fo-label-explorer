@@ -171,9 +171,24 @@ export async function getLabelCount() {
 export async function getAllCultures() {
   await initDB();
   
-  const labels = await getAllLabels();
-  const cultures = [...new Set(labels.map(l => l.culture))];
-  return cultures.sort();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.LABELS, 'readonly');
+    const store = tx.objectStore(STORES.LABELS);
+    const index = store.index('culture');
+    const request = index.openCursor(null, 'nextunique');
+    const cultures = [];
+
+    request.onsuccess = (event) => {
+      const cursor = event.target.result;
+      if (cursor) {
+        cultures.push(cursor.key);
+        cursor.continue();
+      } else {
+        resolve(cultures.sort());
+      }
+    };
+    request.onerror = () => reject(request.error);
+  });
 }
 
 /**
@@ -183,9 +198,24 @@ export async function getAllCultures() {
 export async function getAllModels() {
   await initDB();
   
-  const labels = await getAllLabels();
-  const models = [...new Set(labels.map(l => l.model))];
-  return models.sort();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.LABELS, 'readonly');
+    const store = tx.objectStore(STORES.LABELS);
+    const index = store.index('model');
+    const request = index.openCursor(null, 'nextunique');
+    const models = [];
+
+    request.onsuccess = (event) => {
+      const cursor = event.target.result;
+      if (cursor) {
+        models.push(cursor.key);
+        cursor.continue();
+      } else {
+        resolve(models.sort());
+      }
+    };
+    request.onerror = () => reject(request.error);
+  });
 }
 
 /**
