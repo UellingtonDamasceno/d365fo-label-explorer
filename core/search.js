@@ -50,11 +50,13 @@ export function indexLabels(labels) {
 }
 
 /**
- * Index all labels from array
+ * Index all labels from array (append to existing)
  * @param {Array<Object>} labels 
  */
 export function indexAll(labels) {
-  initSearch();
+  if (!searchIndex) {
+    initSearch();
+  }
   
   labels.forEach(label => {
     const doc = {
@@ -62,9 +64,8 @@ export function indexAll(labels) {
       searchTarget: `${label.labelId} ${label.text} ${label.help || ''} ${label.fullId}`
     };
     searchIndex.add(doc);
+    labelsData.push(label);
   });
-  
-  labelsData = [...labels];
 }
 
 /**
