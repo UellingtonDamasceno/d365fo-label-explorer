@@ -1,26 +1,24 @@
 /**
- * Indexer Worker - SPEC-18 State of the Art Mass Processing
+ * Indexer Worker - SPEC-20 Fast Synchronous Parsing
  * 
- * ARCHITECTURE (Zero-Copy Pipeline & Streaming):
+ * ARCHITECTURE (Worker-Buffered Synchronous Parsing):
  * 1. Main Thread passes FileSystemFileHandle (no file reading!)
  * 2. Worker opens file via handle.getFile()
- * 3. Worker uses Web Streams API to read line-by-line (never loads entire file)
- * 4. Worker parses and saves to IndexedDB in batches of 5000
- * 5. Worker sends only progress counts back (never label arrays!)
+ * 3. Worker reads ENTIRE file as string (file.text()) - fast O/S level read
+ * 4. Worker splits into lines synchronously and parses in tight loop
+ * 5. Worker saves to IndexedDB in batches of 5000
+ * 6. Worker sends only progress counts back (never label arrays!)
  * 
- * Memory: Labels are parsed and saved immediately, never accumulated.
- * The only arrays in memory are the current batch (max 5000 labels).
+ * Why not Web Streams?
+ * - Streams API creates millions of micro-promises for large files
+ * - The V8 Promise overhead was slower than just loading 1-3MB into RAM
+ * - Each Worker has its own heap, so this doesn't affect Main Thread
+ * - GC cleans up the string quickly after each file
  */
 
 const DB_NAME = 'd365fo-labels';
 const DB_VERSION = 1;
 const DB_BATCH_SIZE = 5000; // Bulk commit every 5000 labels
-
-// Parser states
-const State = {
-  SEARCHING_LABEL: 'SEARCHING',
-  CAPTURING_METADATA: 'CAPTURING'
-};
 
 let db = null;
 
@@ -78,10 +76,11 @@ async function saveLabelsBatch(labels) {
     const store = tx.objectStore('labels');
     let count = 0;
 
-    labels.forEach(label => {
-      const request = store.put(label);
+    // Use single put per label (IndexedDB handles batching internally)
+    for (let i = 0; i < labels.length; i++) {
+      const request = store.put(labels[i]);
       request.onsuccess = () => count++;
-    });
+    }
 
     tx.oncomplete = () => resolve(count);
     tx.onerror = () => reject(tx.error);
@@ -89,44 +88,16 @@ async function saveLabelsBatch(labels) {
 }
 
 /**
- * Line splitter TransformStream for streaming parsing
- * Converts byte chunks to lines
- */
-function createLineSplitter() {
-  let buffer = '';
-  
-  return new TransformStream({
-    transform(chunk, controller) {
-      buffer += chunk;
-      const lines = buffer.split('\n');
-      // Keep the last incomplete line in buffer
-      buffer = lines.pop() || '';
-      
-      for (let line of lines) {
-        controller.enqueue(line.replace(/\r$/, ''));
-      }
-    },
-    flush(controller) {
-      // Emit any remaining content as the final line
-      if (buffer) {
-        controller.enqueue(buffer.replace(/\r$/, ''));
-      }
-    }
-  });
-}
-
-/**
- * Process file using Web Streams API for memory-efficient parsing
+ * SPEC-20: Fast synchronous file parsing
+ * Reads entire file as string then parses synchronously (no Promise overhead)
  * @param {FileSystemFileHandle} fileHandle - File handle from Main Thread
  * @param {Object} metadata - File metadata
  * @returns {Promise<Object>} - Processing stats
  */
-async function processFileWithStreaming(fileHandle, metadata) {
+async function processFileFast(fileHandle, metadata) {
   const startTime = performance.now();
   const { model, culture, prefix, sourcePath } = metadata;
   
-  let currentState = State.SEARCHING_LABEL;
-  let currentLabel = null;
   let batch = [];
   let totalLabels = 0;
   let totalBatches = 0;
@@ -135,105 +106,90 @@ async function processFileWithStreaming(fileHandle, metadata) {
     // Initialize DB
     await initDB();
     
-    // Open file from handle (Worker does the I/O, not Main Thread!)
+    // Single async read - O/S level, very fast
     const file = await fileHandle.getFile();
+    const content = await file.text();
     
-    // Create streaming pipeline: File → TextDecoder → LineSplitter
-    const stream = file.stream()
-      .pipeThrough(new TextDecoderStream())
-      .pipeThrough(createLineSplitter());
+    // Synchronous split - hyper-fast in V8
+    const lines = content.split('\n');
+    const lineCount = lines.length;
     
-    const reader = stream.getReader();
+    // State machine variables (inline for speed)
+    let currentLabel = null;
+    let isCapturingHelp = false;
     
-    // Process lines one by one - memory efficient!
-    while (true) {
-      const { done, value: line } = await reader.read();
+    // TIGHT SYNCHRONOUS LOOP - no Promises, no await, maximum speed
+    for (let i = 0; i < lineCount; i++) {
+      const rawLine = lines[i];
       
-      if (done) break;
+      // Fast trim of \r (Windows line endings)
+      const line = rawLine.endsWith('\r') 
+        ? rawLine.slice(0, -1) 
+        : rawLine;
       
-      const trimmedLine = line.trimEnd();
-      if (!trimmedLine) continue;
-
-      if (currentState === State.SEARCHING_LABEL) {
-        const equalsIndex = trimmedLine.indexOf('=');
+      // Skip empty lines
+      if (!line) continue;
+      
+      // Check for help/comment line (starts with " ;")
+      if (line.charCodeAt(0) === 32 && line.charCodeAt(1) === 59) { // ' ' and ';'
+        if (currentLabel) {
+          const helpText = line.slice(2).trim();
+          if (helpText) {
+            currentLabel.help = currentLabel.help 
+              ? currentLabel.help + ' ' + helpText 
+              : helpText;
+          }
+        }
+        continue;
+      }
+      
+      // If we were capturing and hit a non-help line, save previous label
+      if (currentLabel) {
+        batch.push(currentLabel);
+        currentLabel = null;
         
-        if (equalsIndex > 0) {
-          const labelId = trimmedLine.substring(0, equalsIndex).trim();
-          const text = trimmedLine.substring(equalsIndex + 1);
+        // Batch save when full
+        if (batch.length >= DB_BATCH_SIZE) {
+          await saveLabelsBatch(batch);
+          totalLabels += batch.length;
+          totalBatches++;
+          batch = [];
           
-          if (labelId && !labelId.startsWith(' ')) {
+          // Progress update for large files
+          self.postMessage({
+            type: 'BATCH_SAVED',
+            labels: totalLabels,
+            file: sourcePath
+          });
+        }
+      }
+      
+      // Try to parse as label line (ID=Text format)
+      const equalsIndex = line.indexOf('=');
+      if (equalsIndex > 0) {
+        // Fast check: first char shouldn't be space
+        if (line.charCodeAt(0) !== 32) {
+          const labelId = line.slice(0, equalsIndex);
+          const text = line.slice(equalsIndex + 1);
+          
+          // Only create label if ID is valid (not empty, no leading space)
+          if (labelId && labelId.charCodeAt(0) !== 32) {
             currentLabel = {
               id: `${model}|${culture}|${prefix}|${labelId}`,
               fullId: `@${prefix}:${labelId}`,
-              labelId: labelId,
-              text: text,
+              labelId,
+              text,
               help: '',
-              model: model,
-              culture: culture,
-              prefix: prefix,
-              sourcePath: sourcePath
+              model,
+              culture,
+              prefix,
+              sourcePath
             };
-            currentState = State.CAPTURING_METADATA;
-          }
-        }
-      } else if (currentState === State.CAPTURING_METADATA) {
-        if (line.startsWith(' ;')) {
-          const helpText = line.substring(2).trim();
-          if (currentLabel.help) {
-            currentLabel.help += ' ' + helpText;
-          } else {
-            currentLabel.help = helpText;
-          }
-        } else {
-          if (currentLabel) {
-            batch.push(currentLabel);
-            
-            // Save batch when it reaches size limit
-            if (batch.length >= DB_BATCH_SIZE) {
-              await saveLabelsBatch(batch);
-              totalLabels += batch.length;
-              totalBatches++;
-              batch = []; // Clear batch - memory is freed immediately
-              
-              // Send progress for large files
-              self.postMessage({
-                type: 'BATCH_SAVED',
-                labels: totalLabels,
-                file: sourcePath
-              });
-            }
-          }
-          
-          const equalsIndex = trimmedLine.indexOf('=');
-          
-          if (equalsIndex > 0) {
-            const labelId = trimmedLine.substring(0, equalsIndex).trim();
-            const text = trimmedLine.substring(equalsIndex + 1);
-            
-            if (labelId && !labelId.startsWith(' ')) {
-              currentLabel = {
-                id: `${model}|${culture}|${prefix}|${labelId}`,
-                fullId: `@${prefix}:${labelId}`,
-                labelId: labelId,
-                text: text,
-                help: '',
-                model: model,
-                culture: culture,
-                prefix: prefix,
-                sourcePath: sourcePath
-              };
-            } else {
-              currentLabel = null;
-              currentState = State.SEARCHING_LABEL;
-            }
-          } else {
-            currentLabel = null;
-            currentState = State.SEARCHING_LABEL;
           }
         }
       }
     }
-
+    
     // Don't forget the last label
     if (currentLabel) {
       batch.push(currentLabel);
@@ -277,35 +233,43 @@ async function processFilesWithHandles(files) {
   // Initialize DB once
   await initDB();
 
-  for (const { handle, metadata } of files) {
-    try {
-      const result = await processFileWithStreaming(handle, metadata);
-      
-      if (result.success) {
-        totalLabels += result.labels;
-        processedFiles++;
+  // CONCURRENCY LIMIT: Process multiple files in parallel per worker
+  // This unleashes the NVMe SSD I/O while keeping memory footprint low
+  const CONCURRENCY_LIMIT = 10;
+  
+  for (let i = 0; i < files.length; i += CONCURRENCY_LIMIT) {
+    const chunk = files.slice(i, i + CONCURRENCY_LIMIT);
+    
+    await Promise.all(chunk.map(async ({ handle, metadata }) => {
+      try {
+        const result = await processFileFast(handle, metadata);
         
-        // Send progress update (only counts, never label data!)
-        self.postMessage({
-          type: 'FILE_COMPLETE',
-          file: metadata.sourcePath,
-          labels: result.labels,
-          totalLabels,
-          processedFiles,
-          totalFiles: files.length
-        });
-      } else {
-        errors.push({ file: metadata.sourcePath, error: result.error });
+        if (result.success) {
+          totalLabels += result.labels;
+          processedFiles++;
+          
+          // Send progress update (only counts, never label data!)
+          self.postMessage({
+            type: 'FILE_COMPLETE',
+            file: metadata.sourcePath,
+            labels: result.labels,
+            totalLabels,
+            processedFiles,
+            totalFiles: files.length
+          });
+        } else {
+          errors.push({ file: metadata.sourcePath, error: result.error });
+          processedFiles++;
+        }
+      } catch (error) {
+        errors.push({ file: metadata.sourcePath, error: error.message });
         processedFiles++;
       }
-    } catch (error) {
-      errors.push({ file: metadata.sourcePath, error: error.message });
-      processedFiles++;
-    }
+    }));
   }
 
   const elapsed = performance.now() - startTime;
-  
+
   // Send completion (only stats, no label arrays!)
   self.postMessage({
     type: 'COMPLETE',
@@ -323,74 +287,69 @@ async function processFilesWithHandles(files) {
 async function processFileFromContent(content, metadata) {
   const startTime = performance.now();
   const { model, culture, prefix, sourcePath } = metadata;
-  const lines = content.split('\n');
   
-  let currentState = State.SEARCHING_LABEL;
-  let currentLabel = null;
   let batch = [];
   let totalLabels = 0;
   let totalBatches = 0;
 
   await initDB();
+  
+  // Synchronous split
+  const lines = content.split('\n');
+  const lineCount = lines.length;
+  
+  let currentLabel = null;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const trimmedLine = line.trimEnd();
-
-    if (!trimmedLine) continue;
-
-    if (currentState === State.SEARCHING_LABEL) {
-      const equalsIndex = trimmedLine.indexOf('=');
-      
-      if (equalsIndex > 0) {
-        const labelId = trimmedLine.substring(0, equalsIndex).trim();
-        const text = trimmedLine.substring(equalsIndex + 1);
-        
-        if (labelId && !labelId.startsWith(' ')) {
-          currentLabel = {
-            id: `${model}|${culture}|${prefix}|${labelId}`,
-            fullId: `@${prefix}:${labelId}`,
-            labelId: labelId,
-            text: text,
-            help: '',
-            model, culture, prefix, sourcePath
-          };
-          currentState = State.CAPTURING_METADATA;
+  for (let i = 0; i < lineCount; i++) {
+    const rawLine = lines[i];
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    
+    if (!line) continue;
+    
+    // Help line check
+    if (line.charCodeAt(0) === 32 && line.charCodeAt(1) === 59) {
+      if (currentLabel) {
+        const helpText = line.slice(2).trim();
+        if (helpText) {
+          currentLabel.help = currentLabel.help 
+            ? currentLabel.help + ' ' + helpText 
+            : helpText;
         }
       }
-    } else if (currentState === State.CAPTURING_METADATA) {
-      if (line.startsWith(' ;')) {
-        const helpText = line.substring(2).trim();
-        currentLabel.help = currentLabel.help ? currentLabel.help + ' ' + helpText : helpText;
-      } else {
-        if (currentLabel) {
-          batch.push(currentLabel);
-          if (batch.length >= DB_BATCH_SIZE) {
-            await saveLabelsBatch(batch);
-            totalLabels += batch.length;
-            totalBatches++;
-            batch = [];
-          }
-        }
-        
-        const equalsIndex = trimmedLine.indexOf('=');
-        if (equalsIndex > 0) {
-          const labelId = trimmedLine.substring(0, equalsIndex).trim();
-          const text = trimmedLine.substring(equalsIndex + 1);
-          if (labelId && !labelId.startsWith(' ')) {
-            currentLabel = {
-              id: `${model}|${culture}|${prefix}|${labelId}`,
-              fullId: `@${prefix}:${labelId}`,
-              labelId, text, help: '', model, culture, prefix, sourcePath
-            };
-          } else {
-            currentLabel = null;
-            currentState = State.SEARCHING_LABEL;
-          }
-        } else {
-          currentLabel = null;
-          currentState = State.SEARCHING_LABEL;
-        }
+      continue;
+    }
+    
+    // Save previous label
+    if (currentLabel) {
+      batch.push(currentLabel);
+      currentLabel = null;
+      
+      if (batch.length >= DB_BATCH_SIZE) {
+        await saveLabelsBatch(batch);
+        totalLabels += batch.length;
+        totalBatches++;
+        batch = [];
+      }
+    }
+    
+    // Parse label line
+    const equalsIndex = line.indexOf('=');
+    if (equalsIndex > 0 && line.charCodeAt(0) !== 32) {
+      const labelId = line.slice(0, equalsIndex);
+      const text = line.slice(equalsIndex + 1);
+      
+      if (labelId && labelId.charCodeAt(0) !== 32) {
+        currentLabel = {
+          id: `${model}|${culture}|${prefix}|${labelId}`,
+          fullId: `@${prefix}:${labelId}`,
+          labelId,
+          text,
+          help: '',
+          model,
+          culture,
+          prefix,
+          sourcePath
+        };
       }
     }
   }
@@ -418,14 +377,14 @@ self.onmessage = async function(event) {
 
   switch (type) {
     case 'PROCESS_FILES_HANDLES':
-      // SPEC-18: Process files using FileSystemFileHandles (preferred)
+      // SPEC-20: Process files using FileSystemFileHandles with fast sync parsing
       await processFilesWithHandles(files);
       break;
       
     case 'PROCESS_FILE_HANDLE':
-      // SPEC-18: Process single file with FileHandle + Streaming
+      // SPEC-20: Process single file with FileHandle + Fast parsing
       try {
-        const result = await processFileWithStreaming(handle, metadata);
+        const result = await processFileFast(handle, metadata);
         self.postMessage({
           type: 'FILE_RESULT',
           ...result,
