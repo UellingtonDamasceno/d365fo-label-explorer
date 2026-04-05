@@ -3,16 +3,18 @@
  * Handles persistence of labels and metadata
  * 
  * SPEC-23: Added Catalog store for virtual catalog
+ * SPEC-32: Added Builder workspace store
  */
 
 const DB_NAME = 'd365fo-labels';
-const DB_VERSION = 3; // SPEC-23: Added catalog store
+const DB_VERSION = 4; // SPEC-32: Added builder workspace store
 
 const STORES = {
   LABELS: 'labels',
   METADATA: 'metadata',
   HANDLES: 'handles',
-  CATALOG: 'catalog'  // SPEC-23: Virtual catalog
+  CATALOG: 'catalog',  // SPEC-23: Virtual catalog
+  BUILDER: 'builder_workspace'  // SPEC-32: Builder workspace
 };
 
 let db = null;
@@ -20,6 +22,7 @@ let db = null;
 /**
  * Initialize the database
  * SPEC-23: Added Catalog store for language/model status tracking
+ * SPEC-32: Added Builder workspace store
  * @returns {Promise<IDBDatabase>}
  */
 export async function initDB() {
@@ -82,6 +85,13 @@ export async function initDB() {
       catalogStore.createIndex('culture', 'culture', { unique: false });
       catalogStore.createIndex('status', 'status', { unique: false });
       catalogStore.createIndex('model', 'model', { unique: false });
+
+      // SPEC-32: Builder workspace store
+      if (!database.objectStoreNames.contains(STORES.BUILDER)) {
+        const builderStore = database.createObjectStore(STORES.BUILDER, { keyPath: 'id', autoIncrement: true });
+        builderStore.createIndex('labelId', 'labelId', { unique: false });
+        builderStore.createIndex('culture', 'culture', { unique: false });
+      }
     };
   });
 }
@@ -549,6 +559,159 @@ export async function clearCatalog() {
     const request = store.clear();
     
     request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
+// ============================================
+// SPEC-32: Builder Workspace Functions
+// ============================================
+
+/**
+ * Add a label to the builder workspace
+ * @param {Object} label - { labelId, text, helpText, culture, prefix, sourceModel }
+ * @returns {Promise<number>} The auto-generated ID
+ */
+export async function addBuilderLabel(label) {
+  await initDB();
+  
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.BUILDER, 'readwrite', { durability: 'relaxed' });
+    const store = tx.objectStore(STORES.BUILDER);
+    
+    const entry = {
+      ...label,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    
+    const request = store.add(entry);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * Update a builder workspace entry
+ * @param {number} id - Entry ID
+ * @param {Object} updates - Fields to update
+ */
+export async function updateBuilderLabel(id, updates) {
+  await initDB();
+  
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.BUILDER, 'readwrite');
+    const store = tx.objectStore(STORES.BUILDER);
+    const request = store.get(id);
+    
+    request.onsuccess = () => {
+      const entry = request.result;
+      if (!entry) {
+        reject(new Error('Builder entry not found'));
+        return;
+      }
+      
+      const updated = {
+        ...entry,
+        ...updates,
+        updatedAt: Date.now()
+      };
+      
+      store.put(updated);
+    };
+    
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Remove a builder workspace entry
+ * @param {number} id - Entry ID
+ */
+export async function removeBuilderLabel(id) {
+  await initDB();
+  
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.BUILDER, 'readwrite');
+    const store = tx.objectStore(STORES.BUILDER);
+    const request = store.delete(id);
+    
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * Get all builder workspace entries
+ * @returns {Promise<Array>}
+ */
+export async function getBuilderLabels() {
+  await initDB();
+  
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.BUILDER, 'readonly');
+    const store = tx.objectStore(STORES.BUILDER);
+    const request = store.getAll();
+    
+    request.onsuccess = () => resolve(request.result || []);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * Clear all builder workspace entries
+ */
+export async function clearBuilderWorkspace() {
+  await initDB();
+  
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.BUILDER, 'readwrite');
+    const store = tx.objectStore(STORES.BUILDER);
+    const request = store.clear();
+    
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * Get builder workspace count
+ * @returns {Promise<number>}
+ */
+export async function getBuilderCount() {
+  await initDB();
+  
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.BUILDER, 'readonly');
+    const store = tx.objectStore(STORES.BUILDER);
+    const request = store.count();
+    
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * Check if a labelId already exists in the builder (for conflict detection)
+ * @param {string} labelId 
+ * @param {string} culture 
+ * @returns {Promise<Object|null>}
+ */
+export async function findBuilderLabelById(labelId, culture) {
+  await initDB();
+  
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.BUILDER, 'readonly');
+    const store = tx.objectStore(STORES.BUILDER);
+    const index = store.index('labelId');
+    const request = index.getAll(labelId);
+    
+    request.onsuccess = () => {
+      const results = request.result || [];
+      const match = results.find(r => r.culture === culture);
+      resolve(match || null);
+    };
     request.onerror = () => reject(request.error);
   });
 }

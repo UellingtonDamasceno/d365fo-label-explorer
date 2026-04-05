@@ -311,6 +311,12 @@
             <span class="toggle-switch"></span>
             <span class="toggle-label" data-i18n="group_duplicates">Group Duplicate Labels</span>
           </label>
+          <label class="toggle-container" style="margin-top: 12px;">
+            <input type="checkbox" id="setting-direct-save-mode">
+            <span class="toggle-switch"></span>
+            <span class="toggle-label" data-i18n="builder_direct_save_mode">Enable Builder Direct Save mode</span>
+          </label>
+          <small class="setting-hint" data-i18n="builder_direct_save_hint">Allows direct file edits from Builder. Keep disabled to use safe download-only mode.</small>
         </div>
 
         <div class="filter-section">
@@ -409,6 +415,7 @@
           <div class="shortcut-item"><kbd>Alt+P</kbd><span data-i18n="shortcut_settings">Settings</span></div>
           <div class="shortcut-item"><kbd>Alt+I</kbd><span>Index stats dashboard</span></div>
           <div class="shortcut-item"><kbd>Alt+T</kbd><span data-i18n="btn_tools">Tools</span></div>
+          <div class="shortcut-item"><kbd>Alt+B</kbd><span data-i18n="tool_builder">Label Builder</span></div>
           <div class="shortcut-item"><kbd>Alt+R</kbd><span data-i18n="shortcut_rescan">Re-scan</span></div>
           <div class="shortcut-item"><kbd>Alt+E</kbd><span data-i18n="shortcut_select_folder">Select Folder</span></div>
           <div class="shortcut-item"><kbd>Esc</kbd><span data-i18n="shortcut_close">Close</span></div>
@@ -416,6 +423,8 @@
           <div class="shortcut-item"><kbd>↑</kbd><span data-i18n="shortcut_nav_up">Previous result</span></div>
           <div class="shortcut-item"><kbd>Space</kbd><span data-i18n="shortcut_copy">Copy Label ID</span></div>
           <div class="shortcut-item"><kbd>Enter</kbd><span data-i18n="shortcut_details">Open details</span></div>
+          <div class="shortcut-item"><kbd>+</kbd><span data-i18n="shortcut_add_builder">Add to Builder</span></div>
+          <div class="shortcut-item"><kbd>Del</kbd><span data-i18n="shortcut_remove_builder">Remove selected Builder item</span></div>
           <div class="shortcut-item"><kbd>Ctrl+Z</kbd><span data-i18n="shortcut_undo">Undo selection</span></div>
         </div>
       </div>
@@ -675,6 +684,153 @@
         </button>
         <button id="btn-merger-download" class="btn btn-success hidden">
           📥 <span data-i18n="btn_download">Download Merged File</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Label Builder IDE Modal (SPEC-32) -->
+  <div id="builder-modal" class="modal-overlay hidden">
+    <div class="modal-content builder-modal-content">
+      <div class="modal-header">
+        <h3>🏗️ <span data-i18n="builder_title">Label Builder</span></h3>
+        <div class="builder-header-actions">
+          <span id="builder-count-badge" class="builder-count">0 labels</span>
+          <button id="btn-close-builder-modal" class="btn-close">×</button>
+        </div>
+      </div>
+      
+      <!-- Direct Save Warning Banner -->
+      <div id="builder-direct-save-warning" class="builder-warning hidden">
+        ⚠️ <span data-i18n="builder_direct_save_warning">Direct Save mode active. Changes will be applied to original files.</span>
+      </div>
+      
+      <div class="modal-body">
+        <!-- Toolbar -->
+        <div class="builder-toolbar">
+          <button id="btn-builder-new" class="btn btn-outline btn-sm">
+            ➕ <span data-i18n="btn_new_label">New Label</span>
+          </button>
+          <button id="btn-builder-clear" class="btn btn-outline btn-sm">
+            🗑️ <span data-i18n="btn_clear_all">Clear All</span>
+          </button>
+          <div class="builder-toolbar-spacer"></div>
+          <select id="builder-culture-select" class="builder-culture-select">
+            <option value="en-US">en-US</option>
+            <option value="pt-BR">pt-BR</option>
+          </select>
+        </div>
+        
+        <!-- Workspace List -->
+        <div id="builder-workspace" class="builder-workspace">
+          <div id="builder-empty-state" class="builder-empty-state">
+            <span class="empty-icon">📦</span>
+            <p data-i18n="builder_empty_hint">Add labels from search results or create new ones.</p>
+            <p class="hint" data-i18n="builder_tip">Tip: Press <kbd>+</kbd> on any label card to add it here.</p>
+          </div>
+          <div id="builder-items-list" class="builder-items-list hidden">
+            <!-- Builder items will be rendered here -->
+          </div>
+        </div>
+      </div>
+      
+      <div class="modal-footer builder-footer">
+        <button id="btn-builder-download" class="btn btn-primary">
+          📥 <span data-i18n="btn_download_file">Download Label File</span>
+        </button>
+      </div>
+    </div>
+  </div>
+  
+  <!-- New Label Modal (sub-modal for Builder) -->
+  <div id="new-label-modal" class="modal-overlay hidden">
+    <div class="modal-content new-label-modal-content">
+      <div class="modal-header">
+        <h3>➕ <span data-i18n="new_label_title">New Label</span></h3>
+        <button id="btn-close-new-label-modal" class="btn-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="new-label-id" data-i18n="label_id">Label ID</label>
+          <input type="text" id="new-label-id" class="form-input" placeholder="MyLabelId" pattern="^[A-Za-z_][A-Za-z0-9_]*$">
+          <small class="form-hint" data-i18n="label_id_hint">Only letters, numbers, and underscores. Must start with a letter or underscore.</small>
+        </div>
+        <div class="form-group">
+          <label for="new-label-text" data-i18n="label_text">Text</label>
+          <input type="text" id="new-label-text" class="form-input" placeholder="Your label text...">
+        </div>
+        <div class="form-group">
+          <label for="new-label-help" data-i18n="label_help">Help Text (Optional)</label>
+          <input type="text" id="new-label-help" class="form-input" placeholder="Additional context...">
+        </div>
+        <div class="form-group">
+          <label for="new-label-prefix" data-i18n="label_prefix">Prefix</label>
+          <input type="text" id="new-label-prefix" class="form-input" placeholder="@MyPrefix">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-cancel-new-label" class="btn btn-outline" data-i18n="btn_cancel">Cancel</button>
+        <button id="btn-save-new-label" class="btn btn-primary" data-i18n="btn_save">Save</button>
+      </div>
+    </div>
+  </div>
+  
+  <!-- Conflict Resolution Modal (sub-modal for Builder) -->
+  <div id="conflict-modal" class="modal-overlay hidden">
+    <div class="modal-content conflict-modal-content">
+      <div class="modal-header">
+        <h3>⚠️ <span data-i18n="conflict_title">Conflict Detected</span></h3>
+        <button id="btn-close-conflict-modal" class="btn-close">×</button>
+      </div>
+      <div class="modal-body">
+        <p id="conflict-message" class="conflict-message" data-i18n="conflict_description">A label with this ID already exists with different content.</p>
+        <div class="conflict-comparison">
+          <div class="conflict-existing">
+            <h4 data-i18n="existing_version">Existing Label</h4>
+            <div class="conflict-content">
+              <div class="conflict-field">
+                <span class="conflict-field-label">ID:</span>
+                <span id="conflict-existing-id" class="conflict-field-value"></span>
+              </div>
+              <div class="conflict-field">
+                <span class="conflict-field-label">Text:</span>
+                <span id="conflict-existing-text" class="conflict-field-value"></span>
+              </div>
+              <div class="conflict-field">
+                <span class="conflict-field-label">Help:</span>
+                <span id="conflict-existing-help" class="conflict-field-value"></span>
+              </div>
+            </div>
+          </div>
+          <div class="conflict-new">
+            <h4 data-i18n="incoming_version">New Label</h4>
+            <div class="conflict-content">
+              <div class="conflict-field">
+                <span class="conflict-field-label">ID:</span>
+                <span id="conflict-incoming-id" class="conflict-field-value"></span>
+              </div>
+              <div class="conflict-field">
+                <span class="conflict-field-label">Text:</span>
+                <span id="conflict-incoming-text" class="conflict-field-value"></span>
+              </div>
+              <div class="conflict-field">
+                <span class="conflict-field-label">Help:</span>
+                <span id="conflict-incoming-help" class="conflict-field-value"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer conflict-footer">
+        <button id="btn-conflict-skip" class="btn btn-outline" data-i18n="btn_skip">Skip</button>
+        <button id="btn-conflict-rename" class="btn btn-outline">
+          🔄 <span data-i18n="btn_rename">Auto-Rename</span>
+        </button>
+        <button id="btn-conflict-edit" class="btn btn-outline">
+          ✏️ <span data-i18n="btn_edit_manual">Edit Manually</span>
+        </button>
+        <button id="btn-conflict-overwrite" class="btn btn-primary">
+          📝 <span data-i18n="btn_overwrite">Overwrite</span>
         </button>
       </div>
     </div>

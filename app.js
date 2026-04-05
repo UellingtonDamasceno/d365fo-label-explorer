@@ -33,7 +33,8 @@ const state = {
   displaySettings: {
     labelFormat: 'full', // 'full', 'simple', 'hybrid'
     groupDuplicates: true,
-    uiLanguage: 'auto'
+    uiLanguage: 'auto',
+    builderDirectSaveMode: false
   },
   sortPreference: 'relevance',
   selectorModal: {
@@ -260,6 +261,7 @@ function cacheElements() {
     btnCloseSettingsModal: document.getElementById('btn-close-settings-modal'),
     btnApplySettings: document.getElementById('btn-apply-settings'),
     uiLanguageSelect: document.getElementById('ui-language-select'),
+    settingDirectSaveMode: document.getElementById('setting-direct-save-mode'),
     // SPEC-19: Hybrid Search Settings
     settingHybridSearch: document.getElementById('setting-hybrid-search'),
     settingMaxModels: document.getElementById('setting-max-models'),
@@ -352,7 +354,45 @@ function cacheElements() {
     mergerPreviewContent: document.getElementById('merger-preview-content'),
     btnMergerBack: document.getElementById('btn-merger-back'),
     btnMergerMerge: document.getElementById('btn-merger-merge'),
-    btnMergerDownload: document.getElementById('btn-merger-download')
+    btnMergerDownload: document.getElementById('btn-merger-download'),
+
+    // SPEC-32: Builder Modal
+    builderModal: document.getElementById('builder-modal'),
+    btnCloseBuilderModal: document.getElementById('btn-close-builder-modal'),
+    builderCountBadge: document.getElementById('builder-count-badge'),
+    builderDirectSaveWarning: document.getElementById('builder-direct-save-warning'),
+    btnBuilderNew: document.getElementById('btn-builder-new'),
+    btnBuilderClear: document.getElementById('btn-builder-clear'),
+    builderCultureSelect: document.getElementById('builder-culture-select'),
+    builderWorkspace: document.getElementById('builder-workspace'),
+    builderEmptyState: document.getElementById('builder-empty-state'),
+    builderItemsContainer: document.getElementById('builder-items-list'),
+    btnBuilderDownload: document.getElementById('btn-builder-download'),
+    
+    // SPEC-32: New Label Modal
+    newLabelModal: document.getElementById('new-label-modal'),
+    btnCloseNewLabelModal: document.getElementById('btn-close-new-label-modal'),
+    inputNewLabelId: document.getElementById('new-label-id'),
+    inputNewLabelText: document.getElementById('new-label-text'),
+    inputNewLabelHelp: document.getElementById('new-label-help'),
+    inputNewLabelPrefix: document.getElementById('new-label-prefix'),
+    btnCancelNewLabel: document.getElementById('btn-cancel-new-label'),
+    btnSaveNewLabel: document.getElementById('btn-save-new-label'),
+    
+    // SPEC-32: Conflict Modal
+    conflictModal: document.getElementById('conflict-modal'),
+    btnCloseConflictModal: document.getElementById('btn-close-conflict-modal'),
+    conflictMessage: document.getElementById('conflict-message'),
+    conflictExistingId: document.getElementById('conflict-existing-id'),
+    conflictExistingText: document.getElementById('conflict-existing-text'),
+    conflictExistingHelp: document.getElementById('conflict-existing-help'),
+    conflictIncomingId: document.getElementById('conflict-incoming-id'),
+    conflictIncomingText: document.getElementById('conflict-incoming-text'),
+    conflictIncomingHelp: document.getElementById('conflict-incoming-help'),
+    btnConflictRename: document.getElementById('btn-conflict-rename'),
+    btnConflictEdit: document.getElementById('btn-conflict-edit'),
+    btnConflictOverwrite: document.getElementById('btn-conflict-overwrite'),
+    btnConflictSkip: document.getElementById('btn-conflict-skip')
   };
 }
 
@@ -526,6 +566,34 @@ function setupEventListeners() {
   elements.btnMergerMerge?.addEventListener('click', handleMergerMerge);
   elements.btnMergerDownload?.addEventListener('click', handleMergerDownload);
   setupMergerDropzone();
+
+  // SPEC-32: Builder Modal
+  elements.btnToolBuilder?.addEventListener('click', openBuilderModal);
+  elements.btnCloseBuilderModal?.addEventListener('click', closeBuilderModal);
+  elements.builderModal?.addEventListener('click', (e) => {
+    if (e.target === elements.builderModal) closeBuilderModal();
+  });
+  elements.btnBuilderNew?.addEventListener('click', openNewLabelModal);
+  elements.btnBuilderClear?.addEventListener('click', handleBuilderClear);
+  elements.btnBuilderDownload?.addEventListener('click', handleBuilderDownload);
+  
+  // SPEC-32: New Label Modal
+  elements.btnCloseNewLabelModal?.addEventListener('click', closeNewLabelModal);
+  elements.btnCancelNewLabel?.addEventListener('click', closeNewLabelModal);
+  elements.btnSaveNewLabel?.addEventListener('click', handleSaveNewLabel);
+  elements.newLabelModal?.addEventListener('click', (e) => {
+    if (e.target === elements.newLabelModal) closeNewLabelModal();
+  });
+  
+  // SPEC-32: Conflict Modal
+  elements.btnCloseConflictModal?.addEventListener('click', closeConflictModal);
+  elements.btnConflictSkip?.addEventListener('click', () => resolveConflict('skip'));
+  elements.btnConflictRename?.addEventListener('click', () => resolveConflict('rename'));
+  elements.btnConflictEdit?.addEventListener('click', openManualConflictEditor);
+  elements.btnConflictOverwrite?.addEventListener('click', () => resolveConflict('overwrite'));
+  elements.conflictModal?.addEventListener('click', (e) => {
+    if (e.target === elements.conflictModal) closeConflictModal();
+  });
   
   // Keyboard shortcuts
   document.addEventListener('keydown', handleKeyboardShortcuts);
@@ -543,6 +611,9 @@ function setupEventListeners() {
 function handleKeyboardShortcuts(e) {
   const isInputFocused = document.activeElement?.tagName === 'INPUT' || 
                          document.activeElement?.tagName === 'TEXTAREA';
+  const builderModalOpen = !elements.builderModal?.classList.contains('hidden');
+  const builderSubModalOpen = !elements.newLabelModal?.classList.contains('hidden') ||
+                              !elements.conflictModal?.classList.contains('hidden');
   const hasOpenModal = !elements.advancedSearchModal?.classList.contains('hidden') ||
                        !elements.systemSettingsModal?.classList.contains('hidden') ||
                        !elements.itemSelectorModal?.classList.contains('hidden') ||
@@ -552,7 +623,19 @@ function handleKeyboardShortcuts(e) {
                        !elements.backgroundProgressModal?.classList.contains('hidden') ||
                        !elements.statsDashboardModal?.classList.contains('hidden') ||
                        !elements.toolsModal?.classList.contains('hidden') ||
-                       !elements.mergerModal?.classList.contains('hidden');
+                       !elements.mergerModal?.classList.contains('hidden') ||
+                       !elements.builderModal?.classList.contains('hidden') ||
+                       !elements.newLabelModal?.classList.contains('hidden') ||
+                       !elements.conflictModal?.classList.contains('hidden');
+
+  // Delete selected item inside Builder
+  if (builderModalOpen && !builderSubModalOpen && !isInputFocused && e.key === 'Delete') {
+    if (builderState.selectedLabelId !== null) {
+      e.preventDefault();
+      removeBuilderItem(builderState.selectedLabelId);
+    }
+    return;
+  }
 
   // Alt+F to focus search
   if (e.altKey && e.key.toLowerCase() === 'f') {
@@ -573,6 +656,17 @@ function handleKeyboardShortcuts(e) {
   if (e.altKey && e.key.toLowerCase() === 'p') {
     e.preventDefault();
     openSystemSettingsModal();
+    return;
+  }
+
+  // Alt+B to open Builder
+  if (e.altKey && e.key.toLowerCase() === 'b' && state.stage === 'READY') {
+    e.preventDefault();
+    if (!elements.builderModal?.classList.contains('hidden')) {
+      closeBuilderModal();
+    } else {
+      openBuilderModal();
+    }
     return;
   }
 
@@ -633,6 +727,12 @@ function handleKeyboardShortcuts(e) {
       closeMergerModal();
     } else if (!elements.toolsModal?.classList.contains('hidden')) {
       closeToolsModal();
+    } else if (!elements.conflictModal?.classList.contains('hidden')) {
+      closeConflictModal();
+    } else if (!elements.newLabelModal?.classList.contains('hidden')) {
+      closeNewLabelModal();
+    } else if (!elements.builderModal?.classList.contains('hidden')) {
+      closeBuilderModal();
     }
     return;
   }
@@ -685,6 +785,18 @@ function handleKeyboardShortcuts(e) {
         : state.results[state.keyboardNav.selectedIndex];
       if (selectedItem && selectedItem.occurrences?.length > 1) {
         showLabelDetailsModal(selectedItem);
+      }
+      return;
+    }
+
+    // + or = - add selected label to builder
+    if ((e.key === '+' || e.key === '=') && state.keyboardNav.selectedIndex >= 0) {
+      e.preventDefault();
+      const selectedItem = state.displaySettings.groupDuplicates 
+        ? state.groupedResults[state.keyboardNav.selectedIndex]
+        : state.results[state.keyboardNav.selectedIndex];
+      if (selectedItem) {
+        addLabelToBuilder(selectedItem);
       }
       return;
     }
@@ -2833,14 +2945,14 @@ function renderVirtualScroll() {
   // Add event listeners to action buttons
   elements.resultsInner.querySelectorAll('.btn-copy-id').forEach(btn => {
     btn.addEventListener('click', (e) => {
-      const fullId = e.target.dataset.fullid;
+      const fullId = e.currentTarget.dataset.fullid;
       handleCopyId(fullId);
     });
   });
   
   elements.resultsInner.querySelectorAll('.btn-copy-text').forEach(btn => {
     btn.addEventListener('click', (e) => {
-      const text = e.target.dataset.text;
+      const text = e.currentTarget.dataset.text;
       handleCopyText(text);
     });
   });
@@ -2848,8 +2960,19 @@ function renderVirtualScroll() {
   // Add event listeners to model count badges
   elements.resultsInner.querySelectorAll('.model-count-badge').forEach(badge => {
     badge.addEventListener('click', (e) => {
-      const labelIndex = parseInt(e.target.dataset.index);
+      const labelIndex = parseInt(e.currentTarget.dataset.index, 10);
       showLabelDetailsModal(results[labelIndex]);
+    });
+  });
+  
+  // Add event listeners to add-to-builder buttons (SPEC-32)
+  elements.resultsInner.querySelectorAll('.btn-add-builder').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const labelIndex = parseInt(e.currentTarget.dataset.index, 10);
+      const item = results[labelIndex];
+      if (item) {
+        addLabelToBuilder(item);
+      }
     });
   });
 }
@@ -2894,7 +3017,7 @@ function renderLabelCard(group, top, index) {
   }
   
   return `
-    <div class="label-card ${group.compliance && !group.compliance.isComplete ? 'compliance-missing' : ''}" style="top: ${top}px;">
+    <div class="label-card ${group.compliance && !group.compliance.isComplete ? 'compliance-missing' : ''}" data-index="${index}" style="top: ${top}px;">
       <div class="card-header">
         ${labelIdHtml}
         ${modelBadgeHtml}
@@ -2911,6 +3034,9 @@ function renderLabelCard(group, top, index) {
         </button>
         <button class="btn btn-outline btn-sm btn-copy-text" data-text="${escapeAttr(label.text)}">
           📝 Copy Text
+        </button>
+        <button class="btn btn-outline btn-sm btn-add-builder" data-index="${index}" data-label-id="${escapeHtml(label.labelId)}" data-text="${escapeAttr(label.text)}" data-help="${escapeAttr(label.help || '')}" data-prefix="${escapeHtml(label.prefix)}" data-culture="${escapeHtml(label.culture)}" data-model="${escapeHtml(label.model)}" title="Add to Builder">
+          ➕
         </button>
       </div>
     </div>
@@ -3009,6 +3135,9 @@ function openSystemSettingsModal() {
     }
     if (elements.uiLanguageSelect) {
       elements.uiLanguageSelect.value = state.displaySettings.uiLanguage || 'auto';
+    }
+    if (elements.settingDirectSaveMode) {
+      elements.settingDirectSaveMode.checked = !!state.displaySettings.builderDirectSaveMode;
     }
     
     // SPEC-19: Load hybrid search settings
@@ -3579,6 +3708,502 @@ function handleMergerDownload() {
 }
 
 // ============================================
+// SPEC-32: Label Builder IDE
+// ============================================
+
+// Builder State
+const builderState = {
+  labels: [], // Array of { id (db), labelId, culture, text, helpText, prefix, source }
+  pendingConflict: null, // { existingLabel, newLabel }
+  conflictResolveCallback: null, // Function to call after conflict resolution
+  selectedLabelId: null
+};
+
+function applyBuilderDirectSaveVisualState() {
+  const modalContent = elements.builderModal?.querySelector('.builder-modal-content');
+  const directSaveActive = !!state.displaySettings.builderDirectSaveMode;
+
+  elements.builderDirectSaveWarning?.classList.toggle('hidden', !directSaveActive);
+  modalContent?.classList.toggle('direct-save-active', directSaveActive);
+}
+
+function openBuilderModal() {
+  closeToolsModal();
+  applyBuilderDirectSaveVisualState();
+  loadBuilderWorkspace();
+  elements.builderModal?.classList.remove('hidden');
+}
+
+function closeBuilderModal() {
+  elements.builderModal?.classList.add('hidden');
+}
+
+async function loadBuilderWorkspace() {
+  try {
+    builderState.labels = await db.getBuilderLabels();
+    if (!builderState.labels.some(l => l.id === builderState.selectedLabelId)) {
+      builderState.selectedLabelId = builderState.labels.length > 0 ? builderState.labels[0].id : null;
+    }
+    renderBuilderItems();
+    updateBuilderFooter();
+  } catch (err) {
+    console.error('Error loading builder workspace:', err);
+    builderState.labels = [];
+    builderState.selectedLabelId = null;
+    renderBuilderItems();
+  }
+}
+
+function renderBuilderItems() {
+  const container = elements.builderItemsContainer;
+  const emptyState = elements.builderEmptyState;
+  
+  if (!container) return;
+  
+  if (builderState.labels.length === 0) {
+    container.classList.add('hidden');
+    emptyState?.classList.remove('hidden');
+    return;
+  }
+  
+  container.classList.remove('hidden');
+  emptyState?.classList.add('hidden');
+  
+  container.innerHTML = builderState.labels.map((label, idx) => `
+    <div class="builder-item ${builderState.selectedLabelId === label.id ? 'selected' : ''}" data-id="${label.id}" data-index="${idx}" tabindex="0">
+      <div class="builder-item-content">
+        <div class="builder-item-header">
+          <span class="builder-label-id">${escapeHtml(label.labelId)}</span>
+          ${label.prefix ? `<span class="builder-prefix">${escapeHtml(label.prefix)}</span>` : ''}
+          ${label.culture ? `<span class="builder-culture">${escapeHtml(label.culture)}</span>` : ''}
+        </div>
+        <div class="builder-item-text">${escapeHtml(label.text)}</div>
+        ${label.helpText ? `<div class="builder-item-help">${escapeHtml(label.helpText)}</div>` : ''}
+        ${label.source ? `<div class="builder-item-source">${escapeHtml(label.source)}</div>` : ''}
+      </div>
+      <div class="builder-item-actions">
+        <button class="btn-icon btn-edit-builder" title="${t('edit')}" data-id="${label.id}">✏️</button>
+        <button class="btn-icon btn-remove-builder" title="${t('delete')}" data-id="${label.id}">🗑️</button>
+      </div>
+    </div>
+  `).join('');
+  
+  // Attach event listeners
+  container.querySelectorAll('.builder-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const id = parseInt(item.dataset.id, 10);
+      if (Number.isFinite(id)) {
+        builderState.selectedLabelId = id;
+        renderBuilderItems();
+      }
+    });
+  });
+
+  container.querySelectorAll('.btn-edit-builder').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = parseInt(e.currentTarget.dataset.id, 10);
+      editBuilderItem(id);
+    });
+  });
+  
+  container.querySelectorAll('.btn-remove-builder').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = parseInt(e.currentTarget.dataset.id, 10);
+      removeBuilderItem(id);
+    });
+  });
+}
+
+function updateBuilderFooter() {
+  const count = builderState.labels.length;
+  if (elements.builderCountBadge) {
+    elements.builderCountBadge.textContent = t('builder_count', { count });
+  }
+  
+  // Enable/disable buttons based on count
+  if (elements.btnBuilderClear) {
+    elements.btnBuilderClear.disabled = count === 0;
+  }
+  if (elements.btnBuilderDownload) {
+    elements.btnBuilderDownload.disabled = count === 0;
+  }
+}
+
+async function addLabelToBuilder(labelData) {
+  const sourceLabel = labelData?.occurrences?.[0] || labelData || {};
+
+  // Prepare label for builder
+  const newLabel = {
+    labelId: sourceLabel.labelId || sourceLabel.fullId?.split(':')[1] || '',
+    culture: sourceLabel.culture || elements.builderCultureSelect?.value || 'en-US',
+    text: sourceLabel.text || '',
+    helpText: sourceLabel.helpText || sourceLabel.help || '',
+    prefix: sourceLabel.prefix || sourceLabel.fullId?.split(':')[0]?.replace('@', '') || '',
+    source: sourceLabel.model ? `${sourceLabel.model}/${sourceLabel.fileName || 'unknown'}` : 'Search Result'
+  };
+
+  if (!newLabel.labelId || !newLabel.text) {
+    showError(t('builder_add_error') || 'Failed to add label');
+    return;
+  }
+  
+  // Check for conflicts
+  const existingLabel = builderState.labels.find(
+    l => l.labelId === newLabel.labelId && l.culture === newLabel.culture
+  );
+  
+  if (existingLabel) {
+    // Check if it's a total identity conflict (same content)
+    if (existingLabel.text === newLabel.text && existingLabel.helpText === newLabel.helpText) {
+      // Silent deduplication
+      showSuccess(t('builder_duplicate_skipped') || 'Label already exists in workspace');
+      return;
+    }
+    
+    // ID collision - show conflict modal
+    builderState.pendingConflict = { existingLabel, newLabel };
+    openConflictModal(existingLabel, newLabel);
+    return;
+  }
+  
+  // No conflict, add directly
+  try {
+    const id = await db.addBuilderLabel(newLabel);
+    newLabel.id = id;
+    builderState.labels.push(newLabel);
+    builderState.selectedLabelId = id;
+    renderBuilderItems();
+    updateBuilderFooter();
+    showSuccess(t('builder_label_added') || `Added "${newLabel.labelId}" to builder`);
+  } catch (err) {
+    console.error('Error adding label to builder:', err);
+    showError(t('builder_add_error') || 'Failed to add label');
+  }
+}
+
+async function removeBuilderItem(id) {
+  try {
+    await db.removeBuilderLabel(id);
+    builderState.labels = builderState.labels.filter(l => l.id !== id);
+    if (builderState.selectedLabelId === id) {
+      builderState.selectedLabelId = builderState.labels.length > 0 ? builderState.labels[0].id : null;
+    }
+    renderBuilderItems();
+    updateBuilderFooter();
+    showSuccess(t('builder_label_removed') || 'Label removed from workspace');
+  } catch (err) {
+    console.error('Error removing builder item:', err);
+    showError(t('builder_remove_error') || 'Failed to remove label');
+  }
+}
+
+function editBuilderItem(id) {
+  const label = builderState.labels.find(l => l.id === id);
+  if (!label) return;
+  
+  // Pre-fill the new label form with existing data
+  if (elements.inputNewLabelId) elements.inputNewLabelId.value = label.labelId;
+  if (elements.inputNewLabelText) elements.inputNewLabelText.value = label.text;
+  if (elements.inputNewLabelHelp) elements.inputNewLabelHelp.value = label.helpText || '';
+  if (elements.inputNewLabelPrefix) elements.inputNewLabelPrefix.value = label.prefix || '';
+  if (elements.builderCultureSelect && label.culture) {
+    elements.builderCultureSelect.value = label.culture;
+  }
+  
+  // Store the editing ID
+  elements.newLabelModal?.setAttribute('data-editing-id', id.toString());
+  
+  openNewLabelModal();
+}
+
+function openNewLabelModal() {
+  // Clear form if not editing
+  if (!elements.newLabelModal?.hasAttribute('data-editing-id')) {
+    if (elements.inputNewLabelId) elements.inputNewLabelId.value = '';
+    if (elements.inputNewLabelText) elements.inputNewLabelText.value = '';
+    if (elements.inputNewLabelHelp) elements.inputNewLabelHelp.value = '';
+    if (elements.inputNewLabelPrefix) elements.inputNewLabelPrefix.value = '';
+  }
+  
+  elements.newLabelModal?.classList.remove('hidden');
+  elements.inputNewLabelId?.focus();
+}
+
+function closeNewLabelModal() {
+  elements.newLabelModal?.classList.add('hidden');
+  elements.newLabelModal?.removeAttribute('data-editing-id');
+}
+
+async function handleSaveNewLabel() {
+  const labelId = elements.inputNewLabelId?.value?.trim();
+  const text = elements.inputNewLabelText?.value?.trim();
+  const helpText = elements.inputNewLabelHelp?.value?.trim() || '';
+  const prefix = elements.inputNewLabelPrefix?.value?.trim() || '';
+  const culture = elements.builderCultureSelect?.value || 'en-US';
+  
+  // Validation
+  if (!labelId) {
+    showError(t('builder_id_required') || 'Label ID is required');
+    elements.inputNewLabelId?.focus();
+    return;
+  }
+  
+  // Validate ID format: ^[A-Za-z_][A-Za-z0-9_]*$
+  const idPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  if (!idPattern.test(labelId)) {
+    showError(t('builder_invalid_id') || 'Invalid Label ID. Use only letters, numbers, and underscores. Must start with letter or underscore.');
+    elements.inputNewLabelId?.focus();
+    return;
+  }
+  
+  if (!text) {
+    showError(t('builder_text_required') || 'Label text is required');
+    elements.inputNewLabelText?.focus();
+    return;
+  }
+  
+  const editingId = elements.newLabelModal?.getAttribute('data-editing-id');
+  
+  if (editingId) {
+    // Update existing label
+    const id = parseInt(editingId);
+    try {
+      await db.updateBuilderLabel(id, { labelId, text, helpText, prefix });
+      const idx = builderState.labels.findIndex(l => l.id === id);
+      if (idx !== -1) {
+        builderState.labels[idx] = { ...builderState.labels[idx], labelId, text, helpText, prefix };
+      }
+      renderBuilderItems();
+      closeNewLabelModal();
+      showSuccess(t('builder_label_updated') || 'Label updated');
+    } catch (err) {
+      console.error('Error updating builder label:', err);
+      showError(t('builder_update_error') || 'Failed to update label');
+    }
+  } else {
+    // Create new label
+    const newLabel = {
+      labelId,
+      text,
+      helpText,
+      prefix,
+      culture,
+      source: 'Manual Entry'
+    };
+    
+    // Check for conflicts
+    const existingLabel = builderState.labels.find(
+      l => l.labelId === newLabel.labelId && l.culture === newLabel.culture
+    );
+    
+    if (existingLabel) {
+      // ID collision
+      builderState.pendingConflict = { existingLabel, newLabel };
+      closeNewLabelModal();
+      openConflictModal(existingLabel, newLabel);
+      return;
+    }
+    
+    try {
+      const id = await db.addBuilderLabel(newLabel);
+      newLabel.id = id;
+      builderState.labels.push(newLabel);
+      builderState.selectedLabelId = id;
+      renderBuilderItems();
+      updateBuilderFooter();
+      closeNewLabelModal();
+      showSuccess(t('builder_label_added') || `Added "${newLabel.labelId}" to builder`);
+    } catch (err) {
+      console.error('Error adding builder label:', err);
+      showError(t('builder_add_error') || 'Failed to add label');
+    }
+  }
+}
+
+function openConflictModal(existingLabel, newLabel) {
+  if (elements.conflictMessage) {
+    elements.conflictMessage.textContent = t('conflict_description');
+  }
+
+  // Populate conflict comparison
+  if (elements.conflictExistingId) {
+    elements.conflictExistingId.textContent = existingLabel.labelId;
+  }
+  if (elements.conflictExistingText) {
+    elements.conflictExistingText.textContent = existingLabel.text;
+  }
+  if (elements.conflictExistingHelp) {
+    elements.conflictExistingHelp.textContent = existingLabel.helpText || '-';
+  }
+  if (elements.conflictIncomingId) {
+    elements.conflictIncomingId.textContent = newLabel.labelId;
+  }
+  if (elements.conflictIncomingText) {
+    elements.conflictIncomingText.textContent = newLabel.text;
+  }
+  if (elements.conflictIncomingHelp) {
+    elements.conflictIncomingHelp.textContent = newLabel.helpText || '-';
+  }
+  
+  elements.conflictModal?.classList.remove('hidden');
+}
+
+function openManualConflictEditor() {
+  const pending = builderState.pendingConflict;
+  if (!pending?.newLabel) {
+    closeConflictModal();
+    return;
+  }
+
+  if (elements.inputNewLabelId) elements.inputNewLabelId.value = pending.newLabel.labelId;
+  if (elements.inputNewLabelText) elements.inputNewLabelText.value = pending.newLabel.text || '';
+  if (elements.inputNewLabelHelp) elements.inputNewLabelHelp.value = pending.newLabel.helpText || '';
+  if (elements.inputNewLabelPrefix) elements.inputNewLabelPrefix.value = pending.newLabel.prefix || '';
+  if (elements.builderCultureSelect) elements.builderCultureSelect.value = pending.newLabel.culture || 'en-US';
+
+  closeConflictModal();
+  openNewLabelModal();
+}
+
+function closeConflictModal() {
+  elements.conflictModal?.classList.add('hidden');
+  builderState.pendingConflict = null;
+}
+
+async function resolveConflict(action) {
+  const { existingLabel, newLabel } = builderState.pendingConflict || {};
+  
+  if (!existingLabel || !newLabel) {
+    closeConflictModal();
+    return;
+  }
+  
+  try {
+    switch (action) {
+      case 'skip':
+        // Keep existing, discard new
+        showSuccess(t('builder_conflict_skipped') || 'Kept existing label');
+        break;
+        
+      case 'overwrite':
+        // Replace existing with new
+        await db.updateBuilderLabel(existingLabel.id, {
+          text: newLabel.text,
+          helpText: newLabel.helpText,
+          prefix: newLabel.prefix,
+          source: newLabel.source
+        });
+        const idx = builderState.labels.findIndex(l => l.id === existingLabel.id);
+        if (idx !== -1) {
+          builderState.labels[idx] = {
+            ...builderState.labels[idx],
+            text: newLabel.text,
+            helpText: newLabel.helpText,
+            prefix: newLabel.prefix,
+            source: newLabel.source
+          };
+        }
+        renderBuilderItems();
+        showSuccess(t('builder_conflict_overwritten') || 'Label overwritten');
+        break;
+        
+      case 'rename':
+        // Add with auto-renamed ID
+        let suffix = 1;
+        let renamedId = `${newLabel.labelId}${suffix}`;
+        while (builderState.labels.some(l => l.labelId === renamedId && l.culture === newLabel.culture)) {
+          suffix++;
+          renamedId = `${newLabel.labelId}${suffix}`;
+        }
+        const renamedLabel = { ...newLabel, labelId: renamedId };
+        const id = await db.addBuilderLabel(renamedLabel);
+        renamedLabel.id = id;
+        builderState.labels.push(renamedLabel);
+        builderState.selectedLabelId = id;
+        renderBuilderItems();
+        updateBuilderFooter();
+        showSuccess(t('builder_conflict_renamed') || `Added as "${renamedId}"`);
+        break;
+    }
+  } catch (err) {
+    console.error('Error resolving conflict:', err);
+    showError(t('builder_conflict_error') || 'Failed to resolve conflict');
+  }
+  
+  closeConflictModal();
+}
+
+async function handleBuilderClear() {
+  if (builderState.labels.length === 0) return;
+  
+  if (!confirm(t('builder_clear_confirm') || 'Clear all labels from workspace?')) {
+    return;
+  }
+  
+  try {
+    await db.clearBuilderWorkspace();
+    builderState.labels = [];
+    builderState.selectedLabelId = null;
+    renderBuilderItems();
+    updateBuilderFooter();
+    showSuccess(t('builder_cleared') || 'Workspace cleared');
+  } catch (err) {
+    console.error('Error clearing builder workspace:', err);
+    showError(t('builder_clear_error') || 'Failed to clear workspace');
+  }
+}
+
+function handleBuilderDownload() {
+  if (builderState.labels.length === 0) {
+    showError(t('builder_empty') || 'No labels to download');
+    return;
+  }
+  
+  // Sort labels alphabetically by labelId
+  const sortedLabels = [...builderState.labels].sort((a, b) => 
+    a.labelId.localeCompare(b.labelId)
+  );
+  
+  // Generate label file content
+  const lines = sortedLabels.map(label => {
+    // Escape semicolons by doubling them
+    const escapedText = label.text.replace(/;/g, ';;');
+    let line = `${label.labelId}=${escapedText}`;
+    
+    if (label.helpText) {
+      const escapedHelp = label.helpText.replace(/;/g, ';;');
+      line += `;${escapedHelp}`;
+    }
+    
+    return line;
+  });
+  
+  const content = lines.join('\n');
+  
+  // Determine filename based on prefix if all labels share same prefix
+  const prefixes = [...new Set(sortedLabels.map(l => l.prefix).filter(Boolean))];
+  let filename = 'custom.label.txt';
+  if (prefixes.length === 1) {
+    filename = `${prefixes[0]}.label.txt`;
+  }
+  
+  // Download
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  
+  showSuccess(t('builder_download_complete') || `Downloaded ${sortedLabels.length} labels as ${filename}`);
+}
+
+// ============================================
 // SPEC-23: Background Indexing Functions
 // ============================================
 
@@ -3944,6 +4569,7 @@ async function applySystemSettings() {
   });
   state.displaySettings.groupDuplicates = elements.modalGroupDuplicates?.checked || false;
   state.displaySettings.uiLanguage = elements.uiLanguageSelect?.value || 'auto';
+  state.displaySettings.builderDirectSaveMode = elements.settingDirectSaveMode?.checked || false;
 
   // Update language display locale (for flag and name formatting)
   if (state.displaySettings.uiLanguage === 'auto') {
@@ -3955,6 +4581,7 @@ async function applySystemSettings() {
   // Update i18n interface language
   setLanguage(state.displaySettings.uiLanguage);
   updateInterfaceText();
+  applyBuilderDirectSaveVisualState();
 
   // SPEC-19: Save hybrid search settings
   const searchSettings = {
@@ -4217,7 +4844,8 @@ async function loadDisplaySettingsFromDb() {
         groupDuplicates: savedSettings.groupDuplicates !== undefined 
           ? savedSettings.groupDuplicates 
           : true,
-        uiLanguage: savedSettings.uiLanguage || 'auto'
+        uiLanguage: savedSettings.uiLanguage || 'auto',
+        builderDirectSaveMode: !!savedSettings.builderDirectSaveMode
       };
       // Set language display locale
       if (state.displaySettings.uiLanguage === 'auto') {
@@ -4228,6 +4856,7 @@ async function loadDisplaySettingsFromDb() {
       // Set i18n interface language
       setLanguage(state.displaySettings.uiLanguage);
       updateInterfaceText();
+      applyBuilderDirectSaveVisualState();
     }
   } catch (err) {
     console.error('Failed to load display settings:', err);
