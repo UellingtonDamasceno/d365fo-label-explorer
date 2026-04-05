@@ -322,7 +322,37 @@ function cacheElements() {
     statsTotalSize: document.getElementById('stats-total-size'),
     statsGlobalSpeed: document.getElementById('stats-global-speed'),
     statsModelList: document.getElementById('stats-model-list'),
-    statsPairList: document.getElementById('stats-pair-list')
+    statsPairList: document.getElementById('stats-pair-list'),
+
+    // SPEC-36: Tools Menu
+    btnToolsMenu: document.getElementById('btn-tools-menu'),
+    toolsModal: document.getElementById('tools-modal'),
+    btnCloseToolsModal: document.getElementById('btn-close-tools-modal'),
+    btnCloseTools: document.getElementById('btn-close-tools'),
+    btnToolMerger: document.getElementById('btn-tool-merger'),
+    btnToolBuilder: document.getElementById('btn-tool-builder'),
+    btnToolExtractor: document.getElementById('btn-tool-extractor'),
+
+    // SPEC-36: Merger Modal
+    mergerModal: document.getElementById('merger-modal'),
+    btnCloseMergerModal: document.getElementById('btn-close-merger-modal'),
+    mergerDropzone: document.getElementById('merger-dropzone'),
+    btnMergerSelectFiles: document.getElementById('btn-merger-select-files'),
+    mergerFileList: document.getElementById('merger-file-list'),
+    mergerFilesContainer: document.getElementById('merger-files-container'),
+    btnMergerAddMore: document.getElementById('btn-merger-add-more'),
+    btnMergerClearFiles: document.getElementById('btn-merger-clear-files'),
+    mergerStepFiles: document.getElementById('merger-step-files'),
+    mergerStepResults: document.getElementById('merger-step-results'),
+    mergerTotalLabels: document.getElementById('merger-total-labels'),
+    mergerDuplicates: document.getElementById('merger-duplicates'),
+    mergerConflicts: document.getElementById('merger-conflicts'),
+    mergerConflictsSection: document.getElementById('merger-conflicts-section'),
+    mergerConflictsList: document.getElementById('merger-conflicts-list'),
+    mergerPreviewContent: document.getElementById('merger-preview-content'),
+    btnMergerBack: document.getElementById('btn-merger-back'),
+    btnMergerMerge: document.getElementById('btn-merger-merge'),
+    btnMergerDownload: document.getElementById('btn-merger-download')
   };
 }
 
@@ -473,6 +503,29 @@ function setupEventListeners() {
       closeAdvancedSelectionModal();
     }
   });
+
+  // SPEC-36: Tools Menu
+  elements.btnToolsMenu?.addEventListener('click', openToolsModal);
+  elements.btnCloseToolsModal?.addEventListener('click', closeToolsModal);
+  elements.btnCloseTools?.addEventListener('click', closeToolsModal);
+  elements.toolsModal?.addEventListener('click', (e) => {
+    if (e.target === elements.toolsModal) closeToolsModal();
+  });
+  elements.btnToolMerger?.addEventListener('click', openMergerModal);
+
+  // SPEC-36: Merger Modal
+  elements.btnCloseMergerModal?.addEventListener('click', closeMergerModal);
+  elements.mergerModal?.addEventListener('click', (e) => {
+    if (e.target === elements.mergerModal) closeMergerModal();
+  });
+  elements.mergerDropzone?.addEventListener('click', () => elements.btnMergerSelectFiles?.click());
+  elements.btnMergerSelectFiles?.addEventListener('click', handleMergerSelectFiles);
+  elements.btnMergerAddMore?.addEventListener('click', handleMergerSelectFiles);
+  elements.btnMergerClearFiles?.addEventListener('click', handleMergerClearFiles);
+  elements.btnMergerBack?.addEventListener('click', handleMergerBack);
+  elements.btnMergerMerge?.addEventListener('click', handleMergerMerge);
+  elements.btnMergerDownload?.addEventListener('click', handleMergerDownload);
+  setupMergerDropzone();
   
   // Keyboard shortcuts
   document.addEventListener('keydown', handleKeyboardShortcuts);
@@ -497,7 +550,9 @@ function handleKeyboardShortcuts(e) {
                        !elements.shortcutsModal?.classList.contains('hidden') ||
                        !elements.advancedSelectionModal?.classList.contains('hidden') ||
                        !elements.backgroundProgressModal?.classList.contains('hidden') ||
-                       !elements.statsDashboardModal?.classList.contains('hidden');
+                       !elements.statsDashboardModal?.classList.contains('hidden') ||
+                       !elements.toolsModal?.classList.contains('hidden') ||
+                       !elements.mergerModal?.classList.contains('hidden');
 
   // Alt+F to focus search
   if (e.altKey && e.key.toLowerCase() === 'f') {
@@ -535,6 +590,13 @@ function handleKeyboardShortcuts(e) {
     return;
   }
 
+  // Alt+T to open tools menu
+  if (e.altKey && e.key.toLowerCase() === 't' && state.stage === 'READY') {
+    e.preventDefault();
+    openToolsModal();
+    return;
+  }
+
   // Alt+E to select folder
   if (e.altKey && e.key.toLowerCase() === 'e' && state.stage === 'READY') {
     e.preventDefault();
@@ -567,6 +629,10 @@ function handleKeyboardShortcuts(e) {
       closeBackgroundProgressModal();
     } else if (!elements.statsDashboardModal?.classList.contains('hidden')) {
       closeStatsDashboardModal();
+    } else if (!elements.mergerModal?.classList.contains('hidden')) {
+      closeMergerModal();
+    } else if (!elements.toolsModal?.classList.contains('hidden')) {
+      closeToolsModal();
     }
     return;
   }
@@ -3102,6 +3168,414 @@ async function openStatsDashboardModal() {
 
 function closeStatsDashboardModal() {
   elements.statsDashboardModal?.classList.add('hidden');
+}
+
+// ============================================
+// SPEC-36: Tools Menu & Label File Merger
+// ============================================
+
+// Merger State
+const mergerState = {
+  files: [], // Array of { name, content, labels }
+  parsedFiles: [], // Array of parsed file results
+  mergeResult: null, // { sorted, conflicts, content, totalLabels, duplicatesRemoved }
+  resolvedConflicts: new Map(), // conflictId -> resolution
+  worker: null
+};
+
+function openToolsModal() {
+  elements.toolsModal?.classList.remove('hidden');
+}
+
+function closeToolsModal() {
+  elements.toolsModal?.classList.add('hidden');
+}
+
+function openMergerModal() {
+  closeToolsModal();
+  resetMergerState();
+  elements.mergerModal?.classList.remove('hidden');
+}
+
+function closeMergerModal() {
+  elements.mergerModal?.classList.add('hidden');
+  if (mergerState.worker) {
+    mergerState.worker.terminate();
+    mergerState.worker = null;
+  }
+}
+
+function resetMergerState() {
+  mergerState.files = [];
+  mergerState.parsedFiles = [];
+  mergerState.mergeResult = null;
+  mergerState.resolvedConflicts = new Map();
+  
+  // Reset UI
+  elements.mergerStepFiles?.classList.remove('hidden');
+  elements.mergerStepResults?.classList.add('hidden');
+  elements.mergerFileList?.classList.add('hidden');
+  elements.mergerConflictsSection?.classList.add('hidden');
+  elements.btnMergerBack?.classList.add('hidden');
+  elements.btnMergerMerge?.classList.remove('hidden');
+  elements.btnMergerDownload?.classList.add('hidden');
+  
+  if (elements.btnMergerMerge) {
+    elements.btnMergerMerge.disabled = true;
+  }
+  if (elements.mergerFilesContainer) {
+    elements.mergerFilesContainer.innerHTML = '';
+  }
+  if (elements.mergerPreviewContent) {
+    elements.mergerPreviewContent.textContent = '';
+  }
+}
+
+function setupMergerDropzone() {
+  const dropzone = elements.mergerDropzone;
+  if (!dropzone) return;
+  
+  dropzone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dropzone.classList.add('drag-over');
+  });
+  
+  dropzone.addEventListener('dragleave', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dropzone.classList.remove('drag-over');
+  });
+  
+  dropzone.addEventListener('drop', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dropzone.classList.remove('drag-over');
+    
+    const files = [...e.dataTransfer.files].filter(f => f.name.endsWith('.label.txt'));
+    if (files.length === 0) {
+      showError(t('merger_error_no_label_files') || 'Please select .label.txt files');
+      return;
+    }
+    
+    await addMergerFiles(files);
+  });
+}
+
+async function handleMergerSelectFiles(e) {
+  e?.stopPropagation();
+  
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.multiple = true;
+  input.accept = '.txt';
+  
+  input.onchange = async () => {
+    const files = [...input.files].filter(f => f.name.endsWith('.label.txt'));
+    if (files.length === 0) {
+      showError(t('merger_error_no_label_files') || 'Please select .label.txt files');
+      return;
+    }
+    await addMergerFiles(files);
+  };
+  
+  input.click();
+}
+
+async function addMergerFiles(files) {
+  for (const file of files) {
+    // Skip duplicates
+    if (mergerState.files.some(f => f.name === file.name)) continue;
+    
+    const content = await file.text();
+    mergerState.files.push({ name: file.name, content });
+  }
+  
+  updateMergerFileList();
+}
+
+function updateMergerFileList() {
+  if (!elements.mergerFilesContainer) return;
+  
+  if (mergerState.files.length === 0) {
+    elements.mergerFileList?.classList.add('hidden');
+    if (elements.btnMergerMerge) elements.btnMergerMerge.disabled = true;
+    return;
+  }
+  
+  elements.mergerFileList?.classList.remove('hidden');
+  elements.mergerFilesContainer.innerHTML = mergerState.files.map((file, idx) => `
+    <div class="file-item" data-index="${idx}">
+      <span class="file-icon">📄</span>
+      <span class="file-name">${escapeHtml(file.name)}</span>
+      <button class="file-remove" data-index="${idx}" title="Remove">✕</button>
+    </div>
+  `).join('');
+  
+  // Add remove listeners
+  elements.mergerFilesContainer.querySelectorAll('.file-remove').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const idx = parseInt(btn.dataset.index);
+      mergerState.files.splice(idx, 1);
+      updateMergerFileList();
+    });
+  });
+  
+  if (elements.btnMergerMerge) {
+    elements.btnMergerMerge.disabled = mergerState.files.length < 2;
+  }
+}
+
+function handleMergerClearFiles() {
+  mergerState.files = [];
+  updateMergerFileList();
+}
+
+function handleMergerBack() {
+  elements.mergerStepFiles?.classList.remove('hidden');
+  elements.mergerStepResults?.classList.add('hidden');
+  elements.btnMergerBack?.classList.add('hidden');
+  elements.btnMergerMerge?.classList.remove('hidden');
+  elements.btnMergerDownload?.classList.add('hidden');
+  
+  mergerState.mergeResult = null;
+  mergerState.resolvedConflicts.clear();
+}
+
+async function handleMergerMerge() {
+  if (mergerState.files.length < 2) {
+    showError(t('merger_error_min_files') || 'Please select at least 2 files to merge');
+    return;
+  }
+  
+  // Initialize worker
+  if (!mergerState.worker) {
+    mergerState.worker = new Worker('./workers/merger.worker.js');
+  }
+  
+  // Show loading
+  if (elements.btnMergerMerge) {
+    elements.btnMergerMerge.disabled = true;
+    elements.btnMergerMerge.textContent = t('merging') || 'Merging...';
+  }
+  
+  return new Promise((resolve) => {
+    mergerState.worker.onmessage = (e) => {
+      const { type, payload } = e.data;
+      
+      if (type === 'PARSE_COMPLETE') {
+        // Files parsed, now merge
+        mergerState.parsedFiles = payload.parsed;
+        const labelArrays = payload.parsed.map(p => p.labels);
+        
+        mergerState.worker.postMessage({
+          type: 'MERGE_AND_SORT',
+          payload: { labelArrays }
+        });
+      }
+      
+      if (type === 'MERGE_AND_SORT_COMPLETE') {
+        mergerState.mergeResult = payload;
+        showMergeResults();
+        resolve();
+      }
+    };
+    
+    // Start parsing
+    mergerState.worker.postMessage({
+      type: 'PARSE_FILES',
+      payload: {
+        files: mergerState.files.map(f => ({ name: f.name, content: f.content }))
+      }
+    });
+  });
+}
+
+function showMergeResults() {
+  const result = mergerState.mergeResult;
+  if (!result) return;
+  
+  // Switch to results step
+  elements.mergerStepFiles?.classList.add('hidden');
+  elements.mergerStepResults?.classList.remove('hidden');
+  elements.btnMergerBack?.classList.remove('hidden');
+  elements.btnMergerMerge?.classList.add('hidden');
+  
+  // Update stats
+  if (elements.mergerTotalLabels) {
+    elements.mergerTotalLabels.textContent = result.totalLabels.toLocaleString();
+  }
+  if (elements.mergerDuplicates) {
+    elements.mergerDuplicates.textContent = result.duplicatesRemoved.toLocaleString();
+  }
+  if (elements.mergerConflicts) {
+    elements.mergerConflicts.textContent = result.conflicts.length.toLocaleString();
+  }
+  
+  // Show conflicts if any
+  if (result.conflicts.length > 0) {
+    elements.mergerConflictsSection?.classList.remove('hidden');
+    renderMergerConflicts();
+  } else {
+    elements.mergerConflictsSection?.classList.add('hidden');
+    elements.btnMergerDownload?.classList.remove('hidden');
+  }
+  
+  // Show preview
+  updateMergerPreview();
+}
+
+function renderMergerConflicts() {
+  if (!elements.mergerConflictsList || !mergerState.mergeResult) return;
+  
+  const conflicts = mergerState.mergeResult.conflicts;
+  
+  elements.mergerConflictsList.innerHTML = conflicts.map((conflict, idx) => {
+    const existingFile = mergerState.parsedFiles[conflict.existing.sourceIndex]?.name || `File ${conflict.existing.sourceIndex + 1}`;
+    const incomingFile = mergerState.parsedFiles[conflict.incoming.sourceIndex]?.name || `File ${conflict.incoming.sourceIndex + 1}`;
+    const resolution = mergerState.resolvedConflicts.get(conflict.id) || 'keep_existing';
+    
+    return `
+      <div class="conflict-item">
+        <div class="conflict-id">${escapeHtml(conflict.id)}</div>
+        <div class="conflict-versions">
+          <div class="conflict-version">
+            <input type="radio" name="conflict-${idx}" value="keep_existing" id="conflict-${idx}-existing" ${resolution === 'keep_existing' ? 'checked' : ''}>
+            <label for="conflict-${idx}-existing">
+              <span class="version-text">"${escapeHtml(conflict.existing.text)}"</span>
+              <span class="version-source">From: ${escapeHtml(existingFile)}</span>
+            </label>
+          </div>
+          <div class="conflict-version">
+            <input type="radio" name="conflict-${idx}" value="use_incoming" id="conflict-${idx}-incoming" ${resolution === 'use_incoming' ? 'checked' : ''}>
+            <label for="conflict-${idx}-incoming">
+              <span class="version-text">"${escapeHtml(conflict.incoming.text)}"</span>
+              <span class="version-source">From: ${escapeHtml(incomingFile)}</span>
+            </label>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+  
+  // Add change listeners
+  elements.mergerConflictsList.querySelectorAll('input[type="radio"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+      const name = e.target.name;
+      const idx = parseInt(name.split('-')[1]);
+      const conflict = conflicts[idx];
+      mergerState.resolvedConflicts.set(conflict.id, e.target.value);
+      
+      updateMergerPreview();
+      checkMergerReady();
+    });
+  });
+  
+  // Initialize default resolutions
+  conflicts.forEach(c => {
+    if (!mergerState.resolvedConflicts.has(c.id)) {
+      mergerState.resolvedConflicts.set(c.id, 'keep_existing');
+    }
+  });
+  
+  checkMergerReady();
+}
+
+function checkMergerReady() {
+  const conflicts = mergerState.mergeResult?.conflicts || [];
+  const allResolved = conflicts.every(c => mergerState.resolvedConflicts.has(c.id));
+  
+  if (allResolved) {
+    elements.btnMergerDownload?.classList.remove('hidden');
+  }
+}
+
+function updateMergerPreview() {
+  if (!elements.mergerPreviewContent || !mergerState.mergeResult) return;
+  
+  // Build final labels list with conflict resolutions
+  const finalLabels = [...mergerState.mergeResult.sorted];
+  
+  // Apply conflict resolutions
+  for (const conflict of mergerState.mergeResult.conflicts) {
+    const resolution = mergerState.resolvedConflicts.get(conflict.id) || 'keep_existing';
+    
+    if (resolution === 'use_incoming') {
+      // Find and update the label
+      const idx = finalLabels.findIndex(l => l.id === conflict.id);
+      if (idx !== -1) {
+        finalLabels[idx] = {
+          ...finalLabels[idx],
+          text: conflict.incoming.text,
+          helpText: conflict.incoming.helpText
+        };
+      }
+    }
+    // 'keep_existing' is already the default
+  }
+  
+  // Generate preview (show first 50 lines)
+  const previewLines = finalLabels.slice(0, 50).map(label => {
+    let line = `${label.id}=${label.text.replace(/;/g, ';;')}`;
+    if (label.helpText) {
+      line += `;${label.helpText.replace(/;/g, ';;')}`;
+    }
+    return line;
+  });
+  
+  if (finalLabels.length > 50) {
+    previewLines.push(`... and ${finalLabels.length - 50} more labels`);
+  }
+  
+  elements.mergerPreviewContent.textContent = previewLines.join('\n');
+}
+
+function handleMergerDownload() {
+  if (!mergerState.mergeResult) return;
+  
+  // Build final content with conflict resolutions
+  const finalLabels = [...mergerState.mergeResult.sorted];
+  
+  // Apply conflict resolutions
+  for (const conflict of mergerState.mergeResult.conflicts) {
+    const resolution = mergerState.resolvedConflicts.get(conflict.id) || 'keep_existing';
+    
+    if (resolution === 'use_incoming') {
+      const idx = finalLabels.findIndex(l => l.id === conflict.id);
+      if (idx !== -1) {
+        finalLabels[idx] = {
+          ...finalLabels[idx],
+          text: conflict.incoming.text,
+          helpText: conflict.incoming.helpText
+        };
+      }
+    }
+  }
+  
+  // Generate content
+  const lines = finalLabels.map(label => {
+    let line = `${label.id}=${label.text.replace(/;/g, ';;')}`;
+    if (label.helpText) {
+      line += `;${label.helpText.replace(/;/g, ';;')}`;
+    }
+    return line;
+  });
+  
+  const content = lines.join('\n');
+  
+  // Download
+  const blob = new Blob([content], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'merged.label.txt';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  
+  showSuccess(t('merger_download_complete') || `Downloaded merged file with ${finalLabels.length} labels`);
 }
 
 // ============================================

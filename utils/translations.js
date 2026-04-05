@@ -184,7 +184,37 @@ export const translations = {
     background_summary_complete: 'Completed: {labels} labels across {files} files at {speed}/s',
     background_hint: 'You can continue searching while indexing completes.',
     no_priority_languages_found: 'No priority languages found in this folder',
-    background_indexing_complete: 'Background indexing complete!'
+    background_indexing_complete: 'Background indexing complete!',
+    
+    // SPEC-36: Tools Menu & Merger
+    btn_tools: 'Tools',
+    tools_title: 'Developer Tools',
+    tool_merger: 'Merge & Sort Labels',
+    tool_merger_desc: 'Combine multiple label files, remove duplicates, and sort alphabetically',
+    tool_builder: 'Label Builder',
+    tool_builder_desc: 'Create and edit label collections with conflict resolution',
+    tool_extractor: 'String Extractor',
+    tool_extractor_desc: 'Extract hardcoded strings from D365FO project files',
+    merger_title: 'Merge & Sort Label Files',
+    merger_drop_hint: 'Drag & drop .label.txt files here',
+    or: 'or',
+    btn_select_files: 'Select Files',
+    files_to_merge: 'Files to Merge',
+    btn_add_more: 'Add More Files',
+    btn_clear_all: 'Clear All',
+    total_labels: 'Total Labels',
+    duplicates_removed: 'Duplicates Removed',
+    conflicts_found: 'Conflicts',
+    resolve_conflicts: 'Resolve Conflicts',
+    conflicts_hint: 'These label IDs have different text in different files. Choose which version to keep.',
+    preview: 'Preview',
+    btn_back: 'Back',
+    btn_merge: 'Merge Files',
+    btn_download: 'Download Merged File',
+    merging: 'Merging...',
+    merger_error_no_label_files: 'Please select .label.txt files',
+    merger_error_min_files: 'Please select at least 2 files to merge',
+    merger_download_complete: 'Downloaded merged file with {count} labels'
   },
   
   'pt-BR': {
@@ -367,7 +397,37 @@ export const translations = {
     background_summary_complete: 'Concluído: {labels} labels em {files} arquivos a {speed}/s',
     background_hint: 'Você pode continuar buscando enquanto a indexação completa.',
     no_priority_languages_found: 'Nenhum idioma prioritário encontrado nesta pasta',
-    background_indexing_complete: 'Indexação em segundo plano concluída!'
+    background_indexing_complete: 'Indexação em segundo plano concluída!',
+    
+    // SPEC-36: Tools Menu & Merger
+    btn_tools: 'Ferramentas',
+    tools_title: 'Ferramentas de Desenvolvimento',
+    tool_merger: 'Mesclar & Ordenar Labels',
+    tool_merger_desc: 'Combine múltiplos arquivos de label, remova duplicatas e ordene alfabeticamente',
+    tool_builder: 'Construtor de Labels',
+    tool_builder_desc: 'Crie e edite coleções de labels com resolução de conflitos',
+    tool_extractor: 'Extrator de Strings',
+    tool_extractor_desc: 'Extraia strings fixas de arquivos de projeto D365FO',
+    merger_title: 'Mesclar & Ordenar Arquivos de Label',
+    merger_drop_hint: 'Arraste e solte arquivos .label.txt aqui',
+    or: 'ou',
+    btn_select_files: 'Selecionar Arquivos',
+    files_to_merge: 'Arquivos para Mesclar',
+    btn_add_more: 'Adicionar Mais',
+    btn_clear_all: 'Limpar Todos',
+    total_labels: 'Total de Labels',
+    duplicates_removed: 'Duplicatas Removidas',
+    conflicts_found: 'Conflitos',
+    resolve_conflicts: 'Resolver Conflitos',
+    conflicts_hint: 'Estes IDs de label têm textos diferentes em arquivos diferentes. Escolha qual versão manter.',
+    preview: 'Visualização',
+    btn_back: 'Voltar',
+    btn_merge: 'Mesclar Arquivos',
+    btn_download: 'Baixar Arquivo Mesclado',
+    merging: 'Mesclando...',
+    merger_error_no_label_files: 'Por favor, selecione arquivos .label.txt',
+    merger_error_min_files: 'Por favor, selecione pelo menos 2 arquivos para mesclar',
+    merger_download_complete: 'Arquivo mesclado baixado com {count} labels'
   }
 };
 

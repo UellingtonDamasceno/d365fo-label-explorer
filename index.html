@@ -152,6 +152,9 @@
           <button id="btn-system-settings" class="btn btn-outline btn-full" title="System Settings (Alt+P)">
             ⚙️ <span data-i18n="btn_system_settings">System Settings</span> <kbd>Alt+P</kbd>
           </button>
+          <button id="btn-tools-menu" class="btn btn-outline btn-full" title="Tools Menu (Alt+T)">
+            🛠️ <span data-i18n="btn_tools">Tools</span> <kbd>Alt+T</kbd>
+          </button>
           
           <!-- Active Filters Pills -->
           <div id="active-filters" class="active-filters hidden">
@@ -405,6 +408,7 @@
           <div class="shortcut-item"><kbd>Alt+S</kbd><span data-i18n="shortcut_advanced_search">Advanced Search</span></div>
           <div class="shortcut-item"><kbd>Alt+P</kbd><span data-i18n="shortcut_settings">Settings</span></div>
           <div class="shortcut-item"><kbd>Alt+I</kbd><span>Index stats dashboard</span></div>
+          <div class="shortcut-item"><kbd>Alt+T</kbd><span data-i18n="btn_tools">Tools</span></div>
           <div class="shortcut-item"><kbd>Alt+R</kbd><span data-i18n="shortcut_rescan">Re-scan</span></div>
           <div class="shortcut-item"><kbd>Alt+E</kbd><span data-i18n="shortcut_select_folder">Select Folder</span></div>
           <div class="shortcut-item"><kbd>Esc</kbd><span data-i18n="shortcut_close">Close</span></div>
@@ -555,6 +559,123 @@
         <div id="stats-model-list" class="language-status-list"></div>
         <h4 style="margin-top:1rem;">Model/Culture Performance</h4>
         <div id="stats-pair-list" class="language-status-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tools Menu Modal -->
+  <div id="tools-modal" class="modal-overlay hidden">
+    <div class="modal-content tools-modal-content">
+      <div class="modal-header">
+        <h3>🛠️ <span data-i18n="tools_title">Developer Tools</span></h3>
+        <button id="btn-close-tools-modal" class="btn-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="tools-grid">
+          <button id="btn-tool-merger" class="tool-card">
+            <span class="tool-icon">🔀</span>
+            <span class="tool-name" data-i18n="tool_merger">Merge & Sort Labels</span>
+            <span class="tool-desc" data-i18n="tool_merger_desc">Combine multiple label files, remove duplicates, and sort alphabetically</span>
+          </button>
+          <button id="btn-tool-builder" class="tool-card">
+            <span class="tool-icon">🏗️</span>
+            <span class="tool-name" data-i18n="tool_builder">Label Builder</span>
+            <span class="tool-desc" data-i18n="tool_builder_desc">Create and edit label collections with conflict resolution</span>
+          </button>
+          <button id="btn-tool-extractor" class="tool-card">
+            <span class="tool-icon">📤</span>
+            <span class="tool-name" data-i18n="tool_extractor">String Extractor</span>
+            <span class="tool-desc" data-i18n="tool_extractor_desc">Extract hardcoded strings from D365FO project files</span>
+          </button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-close-tools" class="btn btn-primary" data-i18n="btn_close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Label File Merger Modal (SPEC-36) -->
+  <div id="merger-modal" class="modal-overlay hidden">
+    <div class="modal-content merger-modal-content">
+      <div class="modal-header">
+        <h3>🔀 <span data-i18n="merger_title">Merge & Sort Label Files</span></h3>
+        <button id="btn-close-merger-modal" class="btn-close">×</button>
+      </div>
+      <div class="modal-body">
+        <!-- Step 1: File Selection -->
+        <div id="merger-step-files" class="merger-step">
+          <div class="merger-dropzone" id="merger-dropzone">
+            <div class="dropzone-content">
+              <span class="dropzone-icon">📁</span>
+              <p data-i18n="merger_drop_hint">Drag & drop .label.txt files here</p>
+              <span class="dropzone-or" data-i18n="or">or</span>
+              <button id="btn-merger-select-files" class="btn btn-outline">
+                <span data-i18n="btn_select_files">Select Files</span>
+              </button>
+            </div>
+          </div>
+          <div id="merger-file-list" class="merger-file-list hidden">
+            <h4 data-i18n="files_to_merge">Files to Merge</h4>
+            <div id="merger-files-container" class="files-container">
+              <!-- File items will be rendered here -->
+            </div>
+            <div class="merger-file-actions">
+              <button id="btn-merger-add-more" class="btn btn-outline btn-sm">
+                + <span data-i18n="btn_add_more">Add More Files</span>
+              </button>
+              <button id="btn-merger-clear-files" class="btn btn-outline btn-sm">
+                🗑️ <span data-i18n="btn_clear_all">Clear All</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Step 2: Merge Progress & Results -->
+        <div id="merger-step-results" class="merger-step hidden">
+          <div class="merger-stats">
+            <div class="stat-item">
+              <span class="stat-value" id="merger-total-labels">0</span>
+              <span class="stat-label" data-i18n="total_labels">Total Labels</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value" id="merger-duplicates">0</span>
+              <span class="stat-label" data-i18n="duplicates_removed">Duplicates Removed</span>
+            </div>
+            <div class="stat-item">
+              <span class="stat-value stat-warning" id="merger-conflicts">0</span>
+              <span class="stat-label" data-i18n="conflicts_found">Conflicts</span>
+            </div>
+          </div>
+          
+          <!-- Conflict Resolution UI -->
+          <div id="merger-conflicts-section" class="merger-conflicts-section hidden">
+            <h4>⚠️ <span data-i18n="resolve_conflicts">Resolve Conflicts</span></h4>
+            <p class="hint" data-i18n="conflicts_hint">These label IDs have different text in different files. Choose which version to keep.</p>
+            <div id="merger-conflicts-list" class="conflicts-list">
+              <!-- Conflict items will be rendered here -->
+            </div>
+          </div>
+          
+          <!-- Preview -->
+          <div class="merger-preview">
+            <h4 data-i18n="preview">Preview</h4>
+            <div id="merger-preview-content" class="preview-content">
+              <!-- Preview of merged content -->
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-merger-back" class="btn btn-outline hidden">
+          ← <span data-i18n="btn_back">Back</span>
+        </button>
+        <button id="btn-merger-merge" class="btn btn-primary" disabled>
+          <span data-i18n="btn_merge">Merge Files</span>
+        </button>
+        <button id="btn-merger-download" class="btn btn-success hidden">
+          📥 <span data-i18n="btn_download">Download Merged File</span>
+        </button>
       </div>
     </div>
   </div>
