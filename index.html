@@ -42,30 +42,50 @@
     </div>
   </div>
 
-  <!-- Discovery Dashboard -->
+  <!-- Discovery Dashboard - SPEC-23 Redesigned -->
   <div id="discovery-dashboard" class="overlay hidden">
     <div class="loader-box dashboard-box">
-      <div class="logo-icon">📊</div>
-      <h2 data-i18n="discovery_complete">Discovery Complete</h2>
-      <p id="discovery-summary">Found <strong>0</strong> models with <strong>0</strong> label files.</p>
-      
-      <div class="selection-controls">
-        <button id="btn-toggle-selection" class="btn btn-outline btn-sm">
-          ✓ <span data-i18n="btn_select_all">Select All</span>
-        </button>
-        <button id="btn-open-language-filter" class="btn btn-outline btn-sm">
-          🌐 <span data-i18n="filter_languages">Filter Languages</span> (<span id="language-filter-count">0</span>)
-        </button>
-        <span id="selection-info" class="selection-info">0 files selected</span>
+      <div class="discovery-header">
+        <div class="logo-icon">📊</div>
+        <h2 data-i18n="discovery_complete">Discovery Complete</h2>
+        <p id="discovery-summary">Found <strong>0</strong> models with <strong>0</strong> label files.</p>
       </div>
-      
-      <div id="models-list" class="models-list">
-        <!-- Models will be rendered here -->
+
+      <div class="discovery-content">
+        <!-- SPEC-23: Recommended Panel (Priority Languages) -->
+        <div class="discovery-panel recommended-panel">
+          <div class="panel-header">
+            <h3>🚀 <span data-i18n="recommended_quick_start">Quick Start (Recommended)</span></h3>
+            <span class="panel-hint" data-i18n="recommended_hint">Start searching in ~5 seconds</span>
+          </div>
+          <div class="priority-languages">
+            <div class="priority-language-chips" id="priority-language-chips">
+              <!-- Filled dynamically -->
+            </div>
+            <p id="priority-files-count" class="priority-count">0 files • 0 labels estimated</p>
+          </div>
+          <button id="btn-quick-start" class="file-label btn-quick-start">
+            <span class="btn-icon">⚡</span> <span data-i18n="btn_quick_start">Start Quick Search</span>
+          </button>
+
+          <label class="toggle-container background-indexing-option">
+            <input type="checkbox" id="chk-background-indexing" checked>
+            <span class="toggle-switch"></span>
+            <span class="toggle-label" data-i18n="background_indexing_label">Index remaining languages in background</span>
+          </label>
+        </div>
+
+        <div id="indexing-progress" class="indexing-progress hidden">
+          <div class="progress-bar">
+            <div id="progress-fill" class="progress-fill"></div>
+          </div>
+          <p id="indexing-status" class="indexing-status" data-i18n="indexing_labels">Indexing labels...</p>
+        </div>
       </div>
-      
-      <div class="dashboard-actions">
-        <button id="btn-start-indexing" class="file-label">
-          <span class="btn-icon">⚡</span> <span data-i18n="btn_start_indexing">Start Indexing Selected</span>
+
+      <div class="dashboard-footer-actions">
+        <button id="btn-open-advanced-selection" class="btn btn-outline">
+          ⚙️ <span data-i18n="advanced_selection">Advanced Selection</span>
         </button>
         <button id="btn-cancel-rescan" class="btn btn-outline hidden">
           <span data-i18n="btn_cancel_rescan">Cancel</span>
@@ -73,13 +93,6 @@
         <button id="btn-change-folder" class="btn btn-outline">
           <span data-i18n="btn_change_folder">Change Folder</span>
         </button>
-      </div>
-      
-      <div id="indexing-progress" class="indexing-progress hidden">
-        <div class="progress-bar">
-          <div id="progress-fill" class="progress-fill"></div>
-        </div>
-        <p id="indexing-status" class="indexing-status" data-i18n="indexing_labels">Indexing labels...</p>
       </div>
     </div>
   </div>
@@ -95,8 +108,14 @@
       </div>
       
       <div class="header-center">
-        <span id="label-count-badge" class="graph-count-badge">0 labels indexed</span>
+        <button id="label-count-badge" class="graph-count-badge" title="Open indexed dataset stats (Alt+I)">0 labels indexed</button>
         <span id="last-indexed" class="last-indexed"></span>
+        
+        <!-- SPEC-23: Background Indexing Progress Indicator -->
+        <button id="btn-background-progress" class="background-progress-btn hidden" title="Background indexing in progress">
+          <span class="progress-spinner"></span>
+          <span class="progress-text">📦 Indexing: 0% (0 labels)</span>
+        </button>
       </div>
       
       <div class="header-actions">
@@ -141,31 +160,31 @@
         </div>
 
         <!-- Scrollable content area -->
-        <div class="sidebar-content">
-          <div class="sidebar-group">
-            <div class="group-header">
-              <span data-i18n="results">Results</span>
-              <span id="results-count" class="count-badge">0</span>
-            </div>
-            
-            <!-- Sorting Selector -->
-            <div class="sort-container">
-              <label for="sort-select" class="sort-label" data-i18n="sort_label">Sort:</label>
-              <select id="sort-select" class="sort-select">
-                <option value="relevance" data-i18n="sort_relevance">Relevance</option>
-                <option value="labelId-asc" data-i18n="sort_labelid_asc">Label ID (A-Z)</option>
-                <option value="labelId-desc" data-i18n="sort_labelid_desc">Label ID (Z-A)</option>
-                <option value="text-asc" data-i18n="sort_text_asc">Text (A-Z)</option>
-                <option value="text-desc" data-i18n="sort_text_desc">Text (Z-A)</option>
-                <option value="model-asc" data-i18n="sort_model_asc">Model (A-Z)</option>
-              </select>
-            </div>
-          </div>
-        </div>
+        <div class="sidebar-content"></div>
       </aside>
 
       <!-- Main Area -->
       <main class="main-area">
+        <div id="live-index-line" class="live-index-line hidden">
+          <div id="live-index-line-fill" class="live-index-line-fill"></div>
+        </div>
+        <div id="results-toolbar" class="results-toolbar hidden">
+          <div class="results-info">
+            <span data-i18n="results">Results</span>:
+            <strong id="results-count" class="count-badge">0</strong>
+          </div>
+          <div class="results-actions">
+            <label for="sort-select" class="sort-label" data-i18n="sort_label">Sort:</label>
+            <select id="sort-select" class="sort-select">
+              <option value="relevance" data-i18n="sort_relevance">Relevance</option>
+              <option value="labelId-asc" data-i18n="sort_labelid_asc">Label ID (A-Z)</option>
+              <option value="labelId-desc" data-i18n="sort_labelid_desc">Label ID (Z-A)</option>
+              <option value="text-asc" data-i18n="sort_text_asc">Text (A-Z)</option>
+              <option value="text-desc" data-i18n="sort_text_desc">Text (Z-A)</option>
+              <option value="model-asc" data-i18n="sort_model_asc">Model (A-Z)</option>
+            </select>
+          </div>
+        </div>
         <!-- Results Container (Virtual Scroll) -->
         <div id="results-container" class="results-container">
           <div id="results-viewport" class="vscroll-container">
@@ -299,6 +318,35 @@
             <option value="pt-BR">Português (Brasil)</option>
           </select>
         </div>
+
+        <!-- SPEC-19: Hybrid Search Settings -->
+        <div class="filter-section">
+          <label class="filter-label" data-i18n="search_performance">🔍 Search Performance</label>
+          
+          <label class="toggle-container">
+            <input type="checkbox" id="setting-hybrid-search" checked>
+            <span class="toggle-switch"></span>
+            <span class="toggle-label" data-i18n="enable_hybrid_search">Enable Hybrid Search</span>
+          </label>
+          <small class="setting-hint" data-i18n="hint_hybrid_search">Uses memory cache for fast fuzzy search. Disable to force IndexedDB-only searches (slower but uses less RAM).</small>
+
+          <div class="display-option" style="margin-top: 1rem;">
+            <label class="display-option-label" data-i18n="max_models_memory">Max Models in Memory</label>
+            <div class="number-input-group">
+              <input type="number" id="setting-max-models" min="1" max="20" value="5" class="number-input">
+              <small class="setting-hint" data-i18n="hint_max_models">Higher values = faster search, more RAM usage (default: 5)</small>
+            </div>
+          </div>
+
+          <div class="display-option" style="margin-top: 1rem;">
+            <label class="display-option-label" data-i18n="fuzzy_threshold">Fuzzy Search Threshold</label>
+            <div class="range-input-group">
+              <input type="range" id="setting-fuzzy-threshold" min="0" max="1" step="0.1" value="0.2" class="range-input">
+              <span id="fuzzy-threshold-value" class="range-value">0.2</span>
+              <small class="setting-hint" data-i18n="hint_fuzzy_threshold">Lower = stricter matching, Higher = more tolerance for typos</small>
+            </div>
+          </div>
+        </div>
       </div>
       <div class="modal-footer">
         <button id="btn-apply-settings" class="btn btn-primary" data-i18n="btn_apply_settings">Apply Settings</button>
@@ -356,6 +404,7 @@
           <div class="shortcut-item"><kbd>Alt+F</kbd><span data-i18n="shortcut_focus_search">Focus Search</span></div>
           <div class="shortcut-item"><kbd>Alt+S</kbd><span data-i18n="shortcut_advanced_search">Advanced Search</span></div>
           <div class="shortcut-item"><kbd>Alt+P</kbd><span data-i18n="shortcut_settings">Settings</span></div>
+          <div class="shortcut-item"><kbd>Alt+I</kbd><span>Index stats dashboard</span></div>
           <div class="shortcut-item"><kbd>Alt+R</kbd><span data-i18n="shortcut_rescan">Re-scan</span></div>
           <div class="shortcut-item"><kbd>Alt+E</kbd><span data-i18n="shortcut_select_folder">Select Folder</span></div>
           <div class="shortcut-item"><kbd>Esc</kbd><span data-i18n="shortcut_close">Close</span></div>
@@ -392,6 +441,120 @@
       </div>
       <div class="modal-footer">
         <button id="btn-apply-language-filter" class="btn btn-primary" data-i18n="btn_apply_filter">Apply Filter</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Discovery Advanced Selection Modal -->
+  <div id="advanced-selection-modal" class="modal-overlay hidden">
+    <div class="modal-content advanced-selection-modal-content">
+      <div class="modal-header">
+        <h3>⚙️ <span data-i18n="advanced_selection">Advanced Selection</span></h3>
+        <button id="btn-close-advanced-selection-modal" class="btn-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="selection-controls">
+          <button id="btn-toggle-selection" class="btn btn-outline btn-sm">
+            ✓ <span data-i18n="btn_select_all">Select All</span>
+          </button>
+          <button id="btn-open-language-filter" class="btn btn-outline btn-sm">
+            🌐 <span data-i18n="filter_languages">Filter Languages</span> (<span id="language-filter-count">0</span>)
+          </button>
+          <span id="selection-info" class="selection-info">0 files selected</span>
+        </div>
+
+        <div id="models-list" class="models-list">
+          <!-- Models will be rendered here -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-start-indexing-modal" class="btn btn-secondary">
+          <span class="btn-icon">📥</span> <span data-i18n="btn_index_selected">Index All Selected</span>
+        </button>
+        <button id="btn-close-advanced-selection" class="btn btn-primary" data-i18n="btn_close">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SPEC-23: Background Indexing Progress Modal -->
+  <div id="background-progress-modal" class="modal-overlay hidden">
+    <div class="modal-content progress-modal-content">
+      <div class="modal-header">
+        <h3>📊 <span data-i18n="background_indexing_title">Background Indexing</span></h3>
+        <button id="btn-close-background-progress" class="btn-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="progress-overview">
+          <div class="progress-stat">
+            <span class="stat-value" id="bg-total-labels">0</span>
+            <span class="stat-label" data-i18n="labels_indexed">Labels Indexed</span>
+          </div>
+          <div class="progress-stat">
+            <span class="stat-value" id="bg-total-percent">0%</span>
+            <span class="stat-label" data-i18n="overall_progress">Overall Progress</span>
+          </div>
+          <div class="progress-stat">
+            <span class="stat-value" id="bg-eta">--</span>
+            <span class="stat-label" data-i18n="estimated_time">Est. Remaining</span>
+          </div>
+          <div class="progress-stat">
+            <span class="stat-value" id="bg-speed">0/s</span>
+            <span class="stat-label" data-i18n="processing_speed">Processing Speed</span>
+          </div>
+        </div>
+        
+        <div class="progress-bar large-progress">
+          <div id="bg-progress-fill" class="progress-fill"></div>
+        </div>
+        
+        <h4 data-i18n="language_status">Language Status</h4>
+        <div class="language-status-grid-header">
+          <span data-i18n="model_column">Model</span>
+          <span data-i18n="language_column">Language</span>
+          <span data-i18n="progress_column">Progress</span>
+          <span data-i18n="status_column">Status</span>
+        </div>
+        <div id="bg-language-list" class="language-status-list">
+          <!-- Filled dynamically with language progress items -->
+        </div>
+        <p id="bg-summary" class="background-summary hidden"></p>
+      </div>
+      <div class="modal-footer">
+        <p class="hint" data-i18n="background_hint">You can continue searching while indexing completes.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- SPEC-29: Advanced Stats Dashboard -->
+  <div id="stats-dashboard-modal" class="modal-overlay hidden">
+    <div class="modal-content progress-modal-content">
+      <div class="modal-header">
+        <h3>📈 Indexed Dataset Stats</h3>
+        <button id="btn-close-stats-dashboard" class="btn-close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="progress-overview">
+          <div class="progress-stat">
+            <span class="stat-value" id="stats-total-models">0</span>
+            <span class="stat-label">Models</span>
+          </div>
+          <div class="progress-stat">
+            <span class="stat-value" id="stats-total-files">0</span>
+            <span class="stat-label">Label Files</span>
+          </div>
+          <div class="progress-stat">
+            <span class="stat-value" id="stats-total-size">0 B</span>
+            <span class="stat-label">Disk Size</span>
+          </div>
+          <div class="progress-stat">
+            <span class="stat-value" id="stats-global-speed">0/s</span>
+            <span class="stat-label">Avg Speed</span>
+          </div>
+        </div>
+        <h4>Model Totals</h4>
+        <div id="stats-model-list" class="language-status-list"></div>
+        <h4 style="margin-top:1rem;">Model/Culture Performance</h4>
+        <div id="stats-pair-list" class="language-status-list"></div>
       </div>
     </div>
   </div>

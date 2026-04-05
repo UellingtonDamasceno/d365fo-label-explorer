@@ -10,7 +10,7 @@ import { debounce } from './utils/debounce.js';
 import { highlight } from './utils/highlight.js';
 import { copyToClipboard } from './utils/clipboard.js';
 import { showSuccess, showError, showInfo } from './utils/toast.js';
-import { getLanguageFlag, formatLanguageDisplay, setDisplayLocale } from './utils/languages.js';
+import { getLanguageFlag, formatLanguageDisplay, setDisplayLocale, buildPriorityLanguages, pickAvailablePriorityLanguages } from './utils/languages.js';
 import { setLanguage, t, updateInterfaceText, getCurrentLanguage } from './utils/translations.js';
 
 // Application state
@@ -58,6 +58,30 @@ const state = {
   },
   keyboardNav: {
     selectedIndex: -1 // Currently selected card index for keyboard navigation
+  },
+  // SPEC-23: Background indexing state
+  indexingMode: 'idle', // 'idle', 'priority', 'background'
+  backgroundIndexing: {
+    enabled: true,
+    priorityLanguages: buildPriorityLanguages().slice(0, 3),
+    totalFiles: 0,
+    processedFiles: 0,
+    totalLabels: 0,
+    baseLabelCount: 0,
+    labelsPerSec: 0,
+    languageStatus: new Map(), // model|||culture -> { model, culture, status, labelCount, fileCount, processedFiles, isPriority }
+    workers: [],
+    startTime: null,
+    updateScheduled: false,
+    completionSummary: null
+  },
+  realtimeStreaming: {
+    enabled: false,
+    maxLabels: 50000,
+    streamedLabels: 0,
+    pendingUiRefresh: false,
+    uiRefreshTimer: null,
+    linePercent: 0
   }
 };
 
@@ -101,20 +125,24 @@ async function init() {
   
   if (hasExistingData) {
     // Load existing data with splash feedback (streaming to avoid OOM)
+    console.time('⏳ Total App Initialization');
     updateSplashStatus('Loading saved labels from database...');
     const totalLabels = await db.getLabelCount();
     state.totalLabels = totalLabels;
     
     updateSplashStatus(`Building search index (${totalLabels.toLocaleString()} labels)...`);
-    // Stream labels from IndexedDB to FlexSearch in chunks
-    await buildSearchIndexStreamingWithSplash();
+    // SPEC-19: Pre-load only priority languages instead of indexing everything
+    const warmStartLanguages = await resolveWarmStartLanguages();
+    state.backgroundIndexing.priorityLanguages = warmStartLanguages;
+    await searchService.preloadPriorityLanguages(warmStartLanguages);
     
     updateSplashStatus('Loading preferences and filters...');
     const lastIndexed = await db.getMetadata('lastIndexed');
     
     // Hide splash and show main interface
     hideSplash();
-    showMainInterface(lastIndexed);
+    await showMainInterface(lastIndexed);
+    console.timeEnd('⏳ Total App Initialization');
   } else {
     // No data - show onboarding
     hideSplash();
@@ -173,9 +201,14 @@ function cacheElements() {
     btnStartIndexing: document.getElementById('btn-start-indexing'),
     btnCancelRescan: document.getElementById('btn-cancel-rescan'),
     btnChangeFolder: document.getElementById('btn-change-folder'),
+    btnOpenAdvancedSelection: document.getElementById('btn-open-advanced-selection'),
     indexingProgress: document.getElementById('indexing-progress'),
     progressFill: document.getElementById('progress-fill'),
     indexingStatus: document.getElementById('indexing-status'),
+    advancedSelectionModal: document.getElementById('advanced-selection-modal'),
+    btnCloseAdvancedSelectionModal: document.getElementById('btn-close-advanced-selection-modal'),
+    btnCloseAdvancedSelection: document.getElementById('btn-close-advanced-selection'),
+    btnStartIndexingModal: document.getElementById('btn-start-indexing-modal'),
     
     // Language Filter Modal
     languageFilterModal: document.getElementById('language-filter-modal'),
@@ -254,11 +287,42 @@ function cacheElements() {
     btnCloseShortcuts: document.getElementById('btn-close-shortcuts'),
     
     // Results
+    resultsToolbar: document.getElementById('results-toolbar'),
+    liveIndexLine: document.getElementById('live-index-line'),
+    liveIndexLineFill: document.getElementById('live-index-line-fill'),
     resultsContainer: document.getElementById('results-container'),
     resultsViewport: document.getElementById('results-viewport'),
     resultsInner: document.getElementById('results-inner'),
     emptyState: document.getElementById('empty-state'),
-    loadingState: document.getElementById('loading-state')
+    loadingState: document.getElementById('loading-state'),
+    
+    // SPEC-23: Tiered Discovery
+    priorityLanguageChips: document.getElementById('priority-language-chips'),
+    priorityFilesCount: document.getElementById('priority-files-count'),
+    btnQuickStart: document.getElementById('btn-quick-start'),
+    chkBackgroundIndexing: document.getElementById('chk-background-indexing'),
+    
+    // SPEC-23: Background Progress
+    btnBackgroundProgress: document.getElementById('btn-background-progress'),
+    backgroundProgressModal: document.getElementById('background-progress-modal'),
+    btnCloseBackgroundProgress: document.getElementById('btn-close-background-progress'),
+    bgTotalLabels: document.getElementById('bg-total-labels'),
+    bgTotalPercent: document.getElementById('bg-total-percent'),
+    bgEta: document.getElementById('bg-eta'),
+    bgSpeed: document.getElementById('bg-speed'),
+    bgProgressFill: document.getElementById('bg-progress-fill'),
+    bgLanguageList: document.getElementById('bg-language-list'),
+    bgSummary: document.getElementById('bg-summary'),
+
+    // SPEC-29: Advanced Stats Dashboard
+    statsDashboardModal: document.getElementById('stats-dashboard-modal'),
+    btnCloseStatsDashboard: document.getElementById('btn-close-stats-dashboard'),
+    statsTotalModels: document.getElementById('stats-total-models'),
+    statsTotalFiles: document.getElementById('stats-total-files'),
+    statsTotalSize: document.getElementById('stats-total-size'),
+    statsGlobalSpeed: document.getElementById('stats-global-speed'),
+    statsModelList: document.getElementById('stats-model-list'),
+    statsPairList: document.getElementById('stats-pair-list')
   };
 }
 
@@ -276,6 +340,16 @@ function setupEventListeners() {
   elements.btnOpenLanguageFilter?.addEventListener('click', openLanguageFilterModal);
   elements.btnStartIndexing?.addEventListener('click', handleStartIndexing);
   elements.btnCancelRescan?.addEventListener('click', handleCancelRescan);
+  elements.btnOpenAdvancedSelection?.addEventListener('click', openAdvancedSelectionModal);
+  elements.btnCloseAdvancedSelectionModal?.addEventListener('click', closeAdvancedSelectionModal);
+  elements.btnCloseAdvancedSelection?.addEventListener('click', closeAdvancedSelectionModal);
+  elements.btnStartIndexingModal?.addEventListener('click', () => {
+    closeAdvancedSelectionModal();
+    handleStartIndexing();
+  });
+  
+  // SPEC-23: Quick Start (Priority Languages)
+  elements.btnQuickStart?.addEventListener('click', handleQuickStart);
   
   // Language Filter Modal
   elements.btnCloseLanguageFilterModal?.addEventListener('click', closeLanguageFilterModal);
@@ -286,6 +360,12 @@ function setupEventListeners() {
   // Header
   elements.btnRescan?.addEventListener('click', handleRescan);
   elements.btnShortcutsHelp?.addEventListener('click', openShortcutsModal);
+  elements.labelCountBadge?.addEventListener('click', openStatsDashboardModal);
+  
+  // SPEC-23: Background Progress
+  elements.btnBackgroundProgress?.addEventListener('click', openBackgroundProgressModal);
+  elements.btnCloseBackgroundProgress?.addEventListener('click', closeBackgroundProgressModal);
+  elements.btnCloseStatsDashboard?.addEventListener('click', closeStatsDashboardModal);
   
   // Search
   const debouncedSearch = debounce(handleSearch, 300);
@@ -375,6 +455,24 @@ function setupEventListeners() {
       closeShortcutsModal();
     }
   });
+
+  elements.backgroundProgressModal?.addEventListener('click', (e) => {
+    if (e.target === elements.backgroundProgressModal) {
+      closeBackgroundProgressModal();
+    }
+  });
+
+  elements.statsDashboardModal?.addEventListener('click', (e) => {
+    if (e.target === elements.statsDashboardModal) {
+      closeStatsDashboardModal();
+    }
+  });
+
+  elements.advancedSelectionModal?.addEventListener('click', (e) => {
+    if (e.target === elements.advancedSelectionModal) {
+      closeAdvancedSelectionModal();
+    }
+  });
   
   // Keyboard shortcuts
   document.addEventListener('keydown', handleKeyboardShortcuts);
@@ -396,7 +494,10 @@ function handleKeyboardShortcuts(e) {
                        !elements.systemSettingsModal?.classList.contains('hidden') ||
                        !elements.itemSelectorModal?.classList.contains('hidden') ||
                        !elements.labelDetailsModal?.classList.contains('hidden') ||
-                       !elements.shortcutsModal?.classList.contains('hidden');
+                       !elements.shortcutsModal?.classList.contains('hidden') ||
+                       !elements.advancedSelectionModal?.classList.contains('hidden') ||
+                       !elements.backgroundProgressModal?.classList.contains('hidden') ||
+                       !elements.statsDashboardModal?.classList.contains('hidden');
 
   // Alt+F to focus search
   if (e.altKey && e.key.toLowerCase() === 'f') {
@@ -427,6 +528,13 @@ function handleKeyboardShortcuts(e) {
     return;
   }
 
+  // Alt+I to open advanced stats
+  if (e.altKey && e.key.toLowerCase() === 'i' && state.stage === 'READY') {
+    e.preventDefault();
+    openStatsDashboardModal();
+    return;
+  }
+
   // Alt+E to select folder
   if (e.altKey && e.key.toLowerCase() === 'e' && state.stage === 'READY') {
     e.preventDefault();
@@ -453,6 +561,12 @@ function handleKeyboardShortcuts(e) {
       closeItemSelectorModal();
     } else if (!elements.labelDetailsModal?.classList.contains('hidden')) {
       closeLabelDetailsModal();
+    } else if (!elements.advancedSelectionModal?.classList.contains('hidden')) {
+      closeAdvancedSelectionModal();
+    } else if (!elements.backgroundProgressModal?.classList.contains('hidden')) {
+      closeBackgroundProgressModal();
+    } else if (!elements.statsDashboardModal?.classList.contains('hidden')) {
+      closeStatsDashboardModal();
     }
     return;
   }
@@ -587,10 +701,24 @@ async function handleChangeFolder() {
   try {
     // IMPORTANT: showDirectoryPicker MUST be the first async call to maintain user gesture context
     const newHandle = await fileAccess.selectDirectory();
+
+    // Show feedback immediately after folder picker returns
+    elements.discoveryDashboard?.classList.add('hidden');
+    elements.app?.classList.add('hidden');
+    elements.onboardingOverlay?.classList.remove('hidden');
+    elements.btnSelectFolder?.classList.add('hidden');
+    elements.scanProgress?.classList.remove('hidden');
+    if (elements.scanStatus) {
+      elements.scanStatus.textContent = 'Clearing previous index...';
+    }
     
     // Only clear data AFTER successfully selecting a new folder
     await db.clearLabels();
+    await db.clearCatalog();
     searchService.clearSearch();
+    if (elements.scanStatus) {
+      elements.scanStatus.textContent = 'Preparing new scan...';
+    }
     
     // Save new handle
     state.directoryHandle = newHandle;
@@ -664,12 +792,66 @@ function showDiscoveryDashboard() {
   elements.indexingProgress?.classList.add('hidden');
   elements.btnStartIndexing?.classList.remove('hidden');
   elements.btnStartIndexing?.classList.remove('disabled');
+  elements.btnQuickStart?.classList.remove('hidden');
+  elements.btnQuickStart?.classList.remove('disabled');
   elements.btnChangeFolder?.classList.remove('hidden');
+  
+  // Reset progress bars and status text
   if (elements.progressFill) {
     elements.progressFill.style.width = '0%';
   }
   if (elements.indexingStatus) {
     elements.indexingStatus.textContent = t('indexing_labels');
+  }
+  
+  // Reset background indexing state on re-scan
+  state.backgroundIndexing.enabled = false;
+  state.backgroundIndexing.totalFiles = 0;
+  state.backgroundIndexing.processedFiles = 0;
+  state.backgroundIndexing.totalLabels = 0;
+  state.backgroundIndexing.baseLabelCount = 0;
+  state.backgroundIndexing.labelsPerSec = 0;
+  state.backgroundIndexing.languageStatus.clear();
+  state.backgroundIndexing.updateScheduled = false;
+  state.backgroundIndexing.completionSummary = null;
+  stopRealtimeStreaming();
+  state.realtimeStreaming.streamedLabels = 0;
+  catalogPendingUpdates.clear();
+  if (catalogFlushTimer) {
+    clearTimeout(catalogFlushTimer);
+    catalogFlushTimer = null;
+  }
+  state.indexingMode = 'idle';
+  
+  // Hide background progress header button on re-scan
+  hideBackgroundProgressIndicator();
+  if (elements.btnBackgroundProgress) {
+    const textSpan = elements.btnBackgroundProgress.querySelector('.progress-text');
+    if (textSpan) {
+      textSpan.textContent = t('header_indexing_active', { percent: 0, count: '0' });
+    }
+  }
+  if (elements.bgProgressFill) {
+    elements.bgProgressFill.style.width = '0%';
+  }
+  if (elements.bgTotalPercent) {
+    elements.bgTotalPercent.textContent = '0%';
+  }
+  if (elements.bgTotalLabels) {
+    elements.bgTotalLabels.textContent = '0';
+  }
+  if (elements.bgEta) {
+    elements.bgEta.textContent = '--';
+  }
+  if (elements.bgSpeed) {
+    elements.bgSpeed.textContent = t('labels_per_second', { count: '0' });
+  }
+  renderBackgroundSummary();
+  hideLiveIndexLine();
+  
+  // Reset model list (clear any previous rendered content)
+  if (elements.modelsListContainer) {
+    elements.modelsListContainer.innerHTML = '';
   }
   
   // Show/hide cancel button based on whether we're coming from READY (re-scan)
@@ -681,6 +863,7 @@ function showDiscoveryDashboard() {
   
   // Also hide main app in case we're coming from there
   elements.app?.classList.add('hidden');
+  closeAdvancedSelectionModal();
   
   // Calculate totals
   const totalModels = state.discoveryData.length;
@@ -703,7 +886,14 @@ function showDiscoveryDashboard() {
   state.languageFilter.selectedLanguages.clear();
   const uniqueCultures = [...new Set(state.discoveryData.flatMap(m => m.cultures.map(c => c.culture)))];
   uniqueCultures.forEach(c => state.languageFilter.selectedLanguages.add(c));
+  state.backgroundIndexing.priorityLanguages = pickAvailablePriorityLanguages(uniqueCultures, navigator.language, 3);
+  if (state.backgroundIndexing.priorityLanguages.length === 0) {
+    state.backgroundIndexing.priorityLanguages = buildPriorityLanguages().slice(0, 3);
+  }
   updateLanguageFilterCount();
+  
+  // SPEC-23: Render priority language chips
+  renderPriorityLanguageChips();
   
   // Render models list with checkboxes
   renderModelsListWithSelection();
@@ -714,6 +904,54 @@ function showDiscoveryDashboard() {
   // Show dashboard
   elements.onboardingOverlay?.classList.add('hidden');
   elements.discoveryDashboard?.classList.remove('hidden');
+}
+
+/**
+ * SPEC-23: Render priority language chips in Quick Start panel
+ */
+function renderPriorityLanguageChips() {
+  const priorityLangs = state.backgroundIndexing.priorityLanguages;
+  const availableCultures = new Set(state.discoveryData.flatMap(m => m.cultures.map(c => c.culture)));
+  
+  let totalPriorityFiles = 0;
+  const chips = priorityLangs.map(lang => {
+    const isAvailable = availableCultures.has(lang);
+    let fileCount = 0;
+    
+    if (isAvailable) {
+      state.discoveryData.forEach(model => {
+        const culture = model.cultures.find(c => c.culture === lang);
+        if (culture) fileCount += culture.files.length;
+      });
+      totalPriorityFiles += fileCount;
+    }
+    
+    const flag = getLanguageFlag(lang);
+    return `
+      <div class="priority-chip ${isAvailable ? 'available' : 'unavailable'}">
+        <span>${flag} ${lang}</span>
+        ${isAvailable ? `<span class="chip-count">${fileCount} files</span>` : ''}
+      </div>
+    `;
+  }).join('');
+  
+  if (elements.priorityLanguageChips) {
+    elements.priorityLanguageChips.innerHTML = chips;
+  }
+  
+  // Estimate labels (avg ~180 labels per file based on typical D365 data)
+  const estimatedLabels = totalPriorityFiles * 180;
+  if (elements.priorityFilesCount) {
+    elements.priorityFilesCount.textContent = `${totalPriorityFiles} files • ~${estimatedLabels.toLocaleString()} labels estimated`;
+  }
+}
+
+function openAdvancedSelectionModal() {
+  elements.advancedSelectionModal?.classList.remove('hidden');
+}
+
+function closeAdvancedSelectionModal() {
+  elements.advancedSelectionModal?.classList.add('hidden');
 }
 
 /**
@@ -1171,11 +1409,332 @@ function handleUndoSelection() {
 }
 
 /**
+ * SPEC-23: Handle Quick Start - Index priority languages first, then background
+ */
+async function handleQuickStart() {
+  const priorityLangs = state.backgroundIndexing.priorityLanguages;
+  const enableBackground = elements.chkBackgroundIndexing?.checked ?? true;
+  
+  // Collect files for priority languages
+  const priorityFiles = [];
+  const backgroundFiles = [];
+  
+  state.discoveryData.forEach(model => {
+    model.cultures.forEach(culture => {
+      const isPriority = priorityLangs.includes(culture.culture);
+      const files = culture.files.map(f => ({
+        handle: f.handle,
+        metadata: {
+          model: model.model,
+          culture: culture.culture,
+          prefix: f.prefix,
+          sourcePath: f.name
+        }
+      }));
+      
+      if (isPriority) {
+        priorityFiles.push(...files);
+      } else {
+        backgroundFiles.push(...files);
+      }
+    });
+  });
+  
+  if (priorityFiles.length === 0) {
+    showError(t('no_priority_languages_found') || 'No priority languages found in this folder');
+    return;
+  }
+
+  state.stage = 'INDEXING';
+  state.indexingMode = 'priority';
+  closeAdvancedSelectionModal();
+  state.backgroundIndexing.completionSummary = null;
+  state.backgroundIndexing.languageStatus.clear();
+  
+  // Show progress
+  elements.btnQuickStart?.classList.add('hidden');
+  elements.btnStartIndexing?.classList.add('hidden');
+  elements.btnCancelRescan?.classList.add('hidden');
+  elements.btnChangeFolder?.classList.add('hidden');
+  elements.indexingProgress?.classList.remove('hidden');
+  
+  // Clear existing data
+  console.time('⏳ Database & Search Clear');
+  await db.clearLabels();
+  await db.clearCatalog();
+  searchService.clearSearch();
+  console.timeEnd('⏳ Database & Search Clear');
+  
+  // Initialize catalog with language status
+  const catalogEntries = [];
+  state.discoveryData.forEach((model) => {
+    model.cultures.forEach((cultureData) => {
+      const key = `${model.model}|||${cultureData.culture}`;
+      const fileCount = cultureData.files.length;
+      const isPriority = priorityLangs.includes(cultureData.culture);
+      const status = isPriority ? 'indexing' : 'waiting';
+      catalogEntries.push({
+        id: key,
+        model: model.model,
+        culture: cultureData.culture,
+        fileCount,
+        processedFiles: 0,
+        labelCount: 0,
+        totalProcessingMs: 0,
+        totalBytes: 0,
+        firstStartedAt: null,
+        lastEndedAt: null,
+        status,
+        isPriority
+      });
+
+      state.backgroundIndexing.languageStatus.set(key, {
+        key,
+        model: model.model,
+        culture: cultureData.culture,
+        fileCount,
+        processedFiles: 0,
+        labelCount: 0,
+        totalProcessingMs: 0,
+        totalBytes: 0,
+        firstStartedAt: null,
+        lastEndedAt: null,
+        status,
+        isPriority
+      });
+    });
+  });
+  await db.saveCatalog(catalogEntries);
+  
+  // Start indexing priority files (non-blocking UI release - Spec 26)
+  console.log(`🚀 SPEC-23 Quick Start: ${priorityFiles.length} priority files`);
+  state.backgroundIndexing.startTime = performance.now();
+  state.backgroundIndexing.baseLabelCount = 0;
+  state.backgroundIndexing.totalFiles = priorityFiles.length;
+  state.backgroundIndexing.processedFiles = 0;
+  state.backgroundIndexing.totalLabels = 0;
+  state.realtimeStreaming.enabled = true;
+  state.realtimeStreaming.streamedLabels = 0;
+  showLiveIndexLine();
+
+  const priorityPromise = indexFilesWithWorkers(priorityFiles, true, {
+    streamLabels: true,
+    streamLimit: state.realtimeStreaming.maxLabels
+  });
+
+  // Keep discovery context briefly so user sees in-panel indexing feedback
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  await showMainInterface();
+
+  try {
+    await priorityPromise;
+    queueCatalogProgressFlush();
+    await flushCatalogProgressNow();
+
+    // Persist priority entries as ready in catalog
+    const priorityEntries = [...state.backgroundIndexing.languageStatus.values()].filter((entry) => entry.isPriority);
+    for (const entry of priorityEntries) {
+      entry.status = 'ready';
+      entry.processedFiles = entry.fileCount;
+      await db.updateCatalogStatus(entry.key, 'ready', entry.labelCount);
+    }
+
+    // Start background indexing if enabled
+    if (enableBackground && backgroundFiles.length > 0) {
+      console.log(`📦 SPEC-23 Background: ${backgroundFiles.length} files queued`);
+      state.indexingMode = 'background';
+      stopRealtimeStreaming();
+      state.backgroundIndexing.baseLabelCount = state.totalLabels;
+      state.backgroundIndexing.startTime = performance.now();
+      showBackgroundProgressIndicator();
+      startBackgroundIndexing(backgroundFiles);
+    } else {
+      state.indexingMode = 'idle';
+      stopRealtimeStreaming();
+      hideLiveIndexLine();
+    }
+  } catch (err) {
+    console.error('Priority indexing error:', err);
+    state.indexingMode = 'idle';
+    stopRealtimeStreaming();
+    hideLiveIndexLine();
+    showError(t('toast_indexing_error') || 'Indexing failed');
+  }
+}
+
+/**
+ * SPEC-23: Index files with worker pool
+ */
+async function indexFilesWithWorkers(fileTasks, isPriority = false, options = {}) {
+  const startTime = performance.now();
+  const totalFiles = fileTasks.length;
+  const streamLabels = Boolean(options.streamLabels);
+  
+  // Determine worker count (fewer for background to reduce contention)
+  const workerCount = isPriority 
+    ? Math.min(navigator.hardwareConcurrency || 4, 4)
+    : 2; // Reduced for background
+  
+  console.log(`🚀 ${isPriority ? 'PRIORITY' : 'BACKGROUND'} INDEXING: ${workerCount} workers for ${totalFiles} files`);
+  
+  // Split files among workers
+  const filesPerWorker = Math.ceil(totalFiles / workerCount);
+  const streamLimitPerWorker = streamLabels
+    ? Math.max(0, Math.floor((options.streamLimit || state.realtimeStreaming.maxLabels) / Math.max(1, workerCount)))
+    : 0;
+  const workers = [];
+  const workerPromises = [];
+  const workerStats = new Map();
+  
+  let totalLabels = 0;
+  let processedFiles = 0;
+  let errors = [];
+  
+  // Progress update function
+  const updateProgress = () => {
+    const percent = totalFiles > 0 ? Math.round((processedFiles / totalFiles) * 100) : 0;
+    if (elements.progressFill) {
+      elements.progressFill.style.width = `${percent}%`;
+    }
+    if (elements.indexingStatus) {
+      elements.indexingStatus.textContent = `${isPriority ? '🚀' : '📦'} ${processedFiles}/${totalFiles} files • ${totalLabels.toLocaleString()} labels`;
+    }
+    
+    // Update background progress if in background mode
+    if (!isPriority && state.indexingMode === 'background') {
+      updateBackgroundProgress(processedFiles, totalFiles, totalLabels);
+    }
+    
+    if (isPriority) {
+      const priorityEntries = [...state.backgroundIndexing.languageStatus.values()].filter((entry) => entry.isPriority);
+      const priorityProcessed = priorityEntries.reduce((sum, entry) => sum + entry.processedFiles, 0);
+      const priorityTotal = priorityEntries.reduce((sum, entry) => sum + entry.fileCount, 0);
+      updateBackgroundProgress(priorityProcessed, priorityTotal || totalFiles, totalLabels);
+    }
+  };
+  
+  // Create workers and assign files
+  for (let i = 0; i < workerCount; i++) {
+    const startIdx = i * filesPerWorker;
+    const endIdx = Math.min(startIdx + filesPerWorker, totalFiles);
+    const workerFiles = fileTasks.slice(startIdx, endIdx);
+    
+    if (workerFiles.length === 0) continue;
+    
+    const worker = new Worker('./workers/indexer.worker.js');
+    workers.push(worker);
+    workerStats.set(i, { labels: 0, files: 0 });
+    
+    const workerPromise = new Promise((resolve, reject) => {
+      worker.onmessage = (e) => {
+        const { type } = e.data;
+        
+        switch (type) {
+          case 'STREAM_LABELS':
+            if (state.realtimeStreaming.enabled && Array.isArray(e.data.labels) && e.data.labels.length > 0) {
+              searchService.indexLabels(e.data.labels);
+              state.realtimeStreaming.streamedLabels += e.data.labels.length;
+              state.totalLabels = state.backgroundIndexing.baseLabelCount + state.realtimeStreaming.streamedLabels;
+              updateLabelCount();
+              scheduleStreamingSearchRefresh();
+            }
+            break;
+
+          case 'PROGRESS':
+            mergeBackgroundPairProgress(e.data.pairProgress, isPriority ? null : 'indexing');
+            queueCatalogProgressFlush();
+            workerStats.set(i, { 
+              labels: e.data.totalLabels, 
+              files: e.data.processedFiles 
+            });
+            // Recalculate totals
+            totalLabels = 0;
+            processedFiles = 0;
+            for (const stats of workerStats.values()) {
+              totalLabels += stats.labels;
+              processedFiles += stats.files;
+            }
+            updateProgress();
+            break;
+            
+          case 'PRIORITY_DONE':
+          case 'COMPLETE':
+            mergeBackgroundPairProgress(
+              e.data.pairProgress,
+              type === 'PRIORITY_DONE' ? 'ready' : (isPriority ? 'ready' : null)
+            );
+            queueCatalogProgressFlush();
+            workerStats.set(i, { 
+              labels: e.data.totalLabels, 
+              files: e.data.processedFiles 
+            });
+            if (e.data.errors?.length > 0) {
+              errors.push(...e.data.errors);
+            }
+            worker.terminate();
+            resolve({
+              labels: e.data.totalLabels,
+              files: e.data.processedFiles
+            });
+            break;
+        }
+      };
+      
+      worker.onerror = (e) => {
+        console.error('Worker error:', e);
+        worker.terminate();
+        reject(e);
+      };
+      
+      worker.postMessage({
+        type: 'PROCESS_FILES_HANDLES',
+        files: workerFiles,
+        isPriority,
+        streamLabels,
+        streamLimit: streamLimitPerWorker
+      });
+    });
+    
+    workerPromises.push(workerPromise);
+  }
+  
+  // Wait for all workers
+  try {
+    await Promise.all(workerPromises);
+    
+    // Final tally
+    totalLabels = 0;
+    processedFiles = 0;
+    for (const stats of workerStats.values()) {
+      totalLabels += stats.labels;
+      processedFiles += stats.files;
+    }
+  } catch (err) {
+    console.error('Indexing error:', err);
+    showError(t('toast_indexing_error') || 'Indexing failed');
+    workers.forEach(w => { try { w.terminate(); } catch (e) {} });
+    return { totalLabels: 0, processedFiles: 0, errors };
+  }
+  
+  const elapsed = (performance.now() - startTime) / 1000;
+  console.log(`✅ ${isPriority ? 'PRIORITY' : 'BACKGROUND'} complete: ${totalLabels} labels in ${elapsed.toFixed(1)}s`);
+
+  await flushCatalogProgressNow();
+  
+  // Update metadata
+  await db.setMetadata('lastIndexed', Date.now());
+  state.totalLabels = await db.getLabelCount();
+  
+  return { totalLabels, processedFiles, errors };
+}
+
+/**
  * Handle start indexing - TURBO INGESTION (SPEC-16)
  * Uses parallel workers and batch processing for high performance
  */
 async function handleStartIndexing() {
   state.stage = 'INDEXING';
+  closeAdvancedSelectionModal();
   
   // Show progress
   elements.btnStartIndexing?.classList.add('hidden');
@@ -1184,8 +1743,10 @@ async function handleStartIndexing() {
   elements.indexingProgress?.classList.remove('hidden');
   
   // Clear existing data
+  console.time('⏳ Database & Search Clear');
   await db.clearLabels();
   searchService.clearSearch();
+  console.timeEnd('⏳ Database & Search Clear');
   
   // Filter selected files only
   const { selectedData, totalFiles } = getSelectedDiscoveryData();
@@ -1207,8 +1768,6 @@ async function handleStartIndexing() {
   // Determine optimal worker count based on CPU cores (max 6 for stability)
   const workerCount = Math.min(navigator.hardwareConcurrency || 4, 6);
   console.log(`🚀 SPEC-18 TURBO INGESTION: ${workerCount} workers for ${totalFiles} files`);
-  console.log(`📦 Architecture: Main Thread passes FileHandles → Workers read+parse+save to IndexedDB`);
-  console.log(`🔒 Zero-Copy: Main Thread NEVER reads file content, NEVER receives label arrays`);
   
   // Update UI function (called only with progress data, never label data)
   function updateProgress() {
@@ -1226,6 +1785,7 @@ async function handleStartIndexing() {
   }
   
   // Collect all file tasks with FileHandles
+  console.time('⏳ File Tasks Collection');
   const fileTasks = [];
   for (const model of selectedData) {
     for (const culture of model.cultures) {
@@ -1242,8 +1802,10 @@ async function handleStartIndexing() {
       }
     }
   }
+  console.timeEnd('⏳ File Tasks Collection');
   
   // Create worker pool
+  console.time('⏳ Worker Pool Initialization');
   const workers = [];
   
   for (let i = 0; i < workerCount; i++) {
@@ -1253,28 +1815,58 @@ async function handleStartIndexing() {
     );
     workers.push(worker);
   }
+  console.timeEnd('⏳ Worker Pool Initialization');
   
   // Distribute files among workers evenly
-  // Each worker gets a chunk of FileHandles to process
   const filesPerWorker = Math.ceil(fileTasks.length / workerCount);
   const workerPromises = [];
   
+  // Track per-worker progress for accurate totals
+  const workerStats = new Map();
+  
+  console.time('⏳ Total Worker Processing Time');
   for (let i = 0; i < workerCount; i++) {
     const workerFiles = fileTasks.slice(i * filesPerWorker, (i + 1) * filesPerWorker);
     
     if (workerFiles.length === 0) continue;
     
     const worker = workers[i];
+    const workerId = i;
+    workerStats.set(workerId, { labels: 0, files: 0 });
     
     const workerPromise = new Promise((resolve, reject) => {
       worker.onmessage = (e) => {
         const { type } = e.data;
         
         switch (type) {
+          case 'PROGRESS':
+            // SPEC-21: Batched progress updates (every 50 files)
+            workerStats.set(workerId, { 
+              labels: e.data.totalLabels, 
+              files: e.data.processedFiles 
+            });
+            // Recalculate totals from all workers
+            totalLabels = 0;
+            processedFiles = 0;
+            for (const stats of workerStats.values()) {
+              totalLabels += stats.labels;
+              processedFiles += stats.files;
+            }
+            updateProgress();
+            break;
+            
           case 'FILE_COMPLETE':
-            // Worker completed a file - update progress
-            totalLabels += e.data.labels;
-            processedFiles++;
+            // Legacy: Per-file progress (kept for compatibility)
+            workerStats.set(workerId, { 
+              labels: e.data.totalLabels, 
+              files: e.data.processedFiles 
+            });
+            totalLabels = 0;
+            processedFiles = 0;
+            for (const stats of workerStats.values()) {
+              totalLabels += stats.labels;
+              processedFiles += stats.files;
+            }
             updateProgress();
             break;
             
@@ -1284,13 +1876,18 @@ async function handleStartIndexing() {
             
           case 'COMPLETE':
             // Worker finished all its files
+            workerStats.set(workerId, { 
+              labels: e.data.totalLabels, 
+              files: e.data.processedFiles 
+            });
             if (e.data.errors?.length > 0) {
               errors.push(...e.data.errors);
             }
             worker.terminate();
             resolve({
               labels: e.data.totalLabels,
-              files: e.data.processedFiles
+              files: e.data.processedFiles,
+              labelsPerSec: e.data.labelsPerSec
             });
             break;
         }
@@ -1302,8 +1899,7 @@ async function handleStartIndexing() {
         reject(e);
       };
       
-      // SPEC-18: Pass FileHandles to Worker - Main Thread NEVER reads file content!
-      // Worker will: 1) Open file from handle, 2) Stream-parse, 3) Save to IndexedDB
+      // SPEC-21: Pass FileHandles to Worker with macro-batching
       worker.postMessage({
         type: 'PROCESS_FILES_HANDLES',
         files: workerFiles
@@ -1315,7 +1911,14 @@ async function handleStartIndexing() {
   
   // Wait for all workers to complete
   try {
-    await Promise.all(workerPromises);
+    const results = await Promise.all(workerPromises);
+    // Final tally from worker completion messages
+    totalLabels = 0;
+    processedFiles = 0;
+    for (const stats of workerStats.values()) {
+      totalLabels += stats.labels;
+      processedFiles += stats.files;
+    }
   } catch (err) {
     console.error('Indexing error:', err);
     showError(t('toast_indexing_error') || 'Indexing failed');
@@ -1340,23 +1943,25 @@ async function handleStartIndexing() {
   });
   
   // Update metadata (no label data needed - workers already saved to DB)
-  elements.indexingStatus.textContent = t('saving_database');
-  await db.setMetadata('lastIndexed', Date.now());
+  elements.indexingStatus.textContent = t('saving_database') || 'Saving metadata...';
+  console.time('⏳ 5. Save Metadata');
+  const indexedAt = Date.now();
+  await db.setMetadata('lastIndexed', indexedAt);
   await db.setMetadata('totalLabels', totalLabels);
+  console.timeEnd('⏳ 5. Save Metadata');
   
-  // Build search index using streaming from IndexedDB
-  // This loads labels in chunks to avoid memory spike
-  elements.indexingStatus.textContent = t('building_index');
-  await buildSearchIndexStreaming();
+  // Pre-load only priority languages into FlexSearch (Lazy Indexing - SPEC-19)
+  elements.indexingStatus.textContent = t('building_index') || 'Building index...';
+  await searchService.preloadPriorityLanguages(state.backgroundIndexing.priorityLanguages);
   
   state.totalLabels = totalLabels;
   state.previousStage = null;
   
-  const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
-  console.log(`✅ Full indexing pipeline complete: ${totalLabels} labels in ${elapsed}s`);
+  const elapsedFinal = ((performance.now() - startTime) / 1000).toFixed(1);
+  console.log(`✅ Full indexing pipeline complete: ${totalLabels} labels in ${elapsedFinal}s`);
   
   // Show main interface
-  showMainInterface();
+  await showMainInterface(indexedAt);
   
   // Show summary
   if (errors.length > 0) {
@@ -1507,6 +2112,7 @@ async function loadExistingData() {
   
   // Build search index using streaming to avoid memory spike
   await buildSearchIndexStreaming();
+  await rehydrateBackgroundStatusFromCatalog();
   
   // Get last indexed time
   const lastIndexed = await db.getMetadata('lastIndexed');
@@ -1514,32 +2120,129 @@ async function loadExistingData() {
   console.log(`✅ Loaded ${totalLabels} labels from database (streamed)`);
   
   // Show main interface
-  showMainInterface(lastIndexed);
+  await showMainInterface(lastIndexed);
+}
+
+async function rehydrateBackgroundStatusFromCatalog() {
+  try {
+    const catalog = await db.getCatalog();
+    if (!catalog.length) return;
+
+    state.backgroundIndexing.languageStatus.clear();
+    let totalFiles = 0;
+    let processedFiles = 0;
+    let totalLabels = 0;
+    let hasInProgress = false;
+
+    for (const entry of catalog) {
+      const key = entry.id || `${entry.model || 'Unknown'}|||${entry.culture}`;
+      const fileCount = entry.fileCount || 0;
+      const entryProcessed = entry.processedFiles ?? (entry.status === 'ready' ? fileCount : 0);
+      const entryLabels = entry.labelCount || 0;
+
+      state.backgroundIndexing.languageStatus.set(key, {
+        key,
+        model: entry.model || 'Unknown',
+        culture: entry.culture,
+        fileCount,
+        processedFiles: entryProcessed,
+        labelCount: entryLabels,
+        totalProcessingMs: entry.totalProcessingMs || 0,
+        totalBytes: entry.totalBytes || 0,
+        firstStartedAt: entry.firstStartedAt || null,
+        lastEndedAt: entry.lastEndedAt || null,
+        status: entry.status || 'waiting',
+        isPriority: Boolean(entry.isPriority)
+      });
+
+      totalFiles += fileCount;
+      processedFiles += entryProcessed;
+      totalLabels += entryLabels;
+      if (entry.status === 'indexing' || entry.status === 'waiting') {
+        hasInProgress = true;
+      }
+    }
+
+    state.backgroundIndexing.totalFiles = totalFiles;
+    state.backgroundIndexing.processedFiles = Math.min(processedFiles, totalFiles);
+    state.backgroundIndexing.totalLabels = totalLabels;
+    state.backgroundIndexing.baseLabelCount = Math.max(0, state.totalLabels - totalLabels);
+    state.backgroundIndexing.startTime = performance.now();
+    state.backgroundIndexing.labelsPerSec = 0;
+    state.backgroundIndexing.completionSummary = null;
+
+    if (hasInProgress && processedFiles < totalFiles) {
+      state.indexingMode = 'background';
+      showBackgroundProgressIndicator();
+      scheduleBackgroundProgressUIUpdate();
+    } else {
+      state.indexingMode = 'idle';
+      hideBackgroundProgressIndicator();
+    }
+  } catch (err) {
+    console.warn('Failed to rehydrate background status from catalog:', err);
+  }
+}
+
+/**
+ * Update label count badge in header
+ * Called after background indexing completes or data changes
+ */
+function updateLabelCount() {
+  if (elements.labelCountBadge) {
+    if (state.indexingMode === 'background') {
+      const processed = Math.max(0, state.totalLabels - (state.backgroundIndexing.baseLabelCount || 0));
+      const percent = state.backgroundIndexing.totalFiles > 0
+        ? Math.round((state.backgroundIndexing.processedFiles / state.backgroundIndexing.totalFiles) * 100)
+        : 0;
+      elements.labelCountBadge.textContent = t('header_indexing_active', {
+        percent,
+        count: processed.toLocaleString()
+      });
+    } else {
+      elements.labelCountBadge.textContent = t('labels_indexed_count', { count: state.totalLabels.toLocaleString() });
+    }
+  }
+}
+
+function updateLastIndexedDisplay(lastIndexed) {
+  if (!elements.lastIndexed) return;
+  if (!lastIndexed) {
+    elements.lastIndexed.textContent = '';
+    return;
+  }
+
+  const date = new Date(lastIndexed);
+  const formattedDate = date.toLocaleString(undefined, {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+  elements.lastIndexed.textContent = t('last_indexed', { date: formattedDate });
 }
 
 /**
  * Show main interface
  */
-function showMainInterface(lastIndexed = null) {
+async function showMainInterface(lastIndexed = null) {
   state.stage = 'READY';
+  if (state.indexingMode !== 'background') {
+    state.backgroundIndexing.baseLabelCount = state.totalLabels;
+  }
   
   // Update header
-  elements.labelCountBadge.textContent = `${state.totalLabels.toLocaleString()} labels indexed`;
-  
-  if (lastIndexed) {
-    const date = new Date(lastIndexed);
-    const formattedDate = date.toLocaleString(undefined, { 
-      day: '2-digit', 
-      month: '2-digit', 
-      year: 'numeric',
-      hour: '2-digit', 
-      minute: '2-digit' 
-    });
-    elements.lastIndexed.textContent = t('last_indexed', { date: formattedDate });
+  updateLabelCount();
+  updateLastIndexedDisplay(lastIndexed);
+  if (state.indexingMode === 'idle') {
+    hideLiveIndexLine();
+  } else {
+    showLiveIndexLine();
   }
   
   // Populate filters
-  populateFilters();
+  await populateFilters();
   
   // Load saved filters and display settings, then render pills
   Promise.all([
@@ -1574,8 +2277,18 @@ function showMainInterface(lastIndexed = null) {
  */
 async function populateFilters() {
   try {
-    const cultures = await db.getAllCultures();
-    const models = await db.getAllModels();
+    const catalog = await db.getCatalog();
+    let cultures = [...new Set(catalog.map(entry => entry.culture).filter(Boolean))].sort();
+    let models = [...new Set(catalog.map(entry => entry.model).filter(Boolean))].sort();
+
+    if (cultures.length === 0 || models.length === 0) {
+      const [labelCultures, labelModels] = await Promise.all([
+        db.getAllCultures(),
+        db.getAllModels()
+      ]);
+      if (cultures.length === 0) cultures = labelCultures;
+      if (models.length === 0) models = labelModels;
+    }
 
     // Store available filters
     state.availableFilters.cultures = cultures;
@@ -1737,6 +2450,10 @@ async function handleSearch() {
     exactMatch: state.filters.exactMatch,
     limit: 500 // Limit results for performance
   };
+
+  if (query.length >= 2 && searchService.getStats().totalIndexed === 0 && state.indexingMode !== 'idle') {
+    await searchService.preloadModelsByName(query, 3);
+  }
   
   // If specific filters are selected, apply them
   let results = await searchService.search(query, filterOptions);
@@ -1907,6 +2624,7 @@ function showEmptyState() {
   elements.loadingState?.classList.add('hidden');
   elements.resultsInner.innerHTML = '';
   elements.resultsInner.style.height = '0';
+  updateResultsToolbarVisibility(false);
 }
 
 /**
@@ -1915,6 +2633,7 @@ function showEmptyState() {
 function showLoading() {
   elements.emptyState?.classList.add('hidden');
   elements.loadingState?.classList.remove('hidden');
+  updateResultsToolbarVisibility(false);
 }
 
 /**
@@ -1931,6 +2650,50 @@ function showNoResults() {
     </div>
   `;
   elements.resultsInner.style.height = 'auto';
+  updateResultsToolbarVisibility(false);
+}
+
+function updateResultsToolbarVisibility(visible) {
+  elements.resultsToolbar?.classList.toggle('hidden', !visible);
+}
+
+function showLiveIndexLine() {
+  elements.liveIndexLine?.classList.remove('hidden');
+}
+
+function hideLiveIndexLine() {
+  elements.liveIndexLine?.classList.add('hidden');
+  if (elements.liveIndexLineFill) {
+    elements.liveIndexLineFill.style.width = '0%';
+  }
+}
+
+function updateLiveIndexLine(percent) {
+  const normalized = Math.max(0, Math.min(100, percent || 0));
+  state.realtimeStreaming.linePercent = normalized;
+  if (elements.liveIndexLineFill) {
+    elements.liveIndexLineFill.style.width = `${normalized}%`;
+  }
+}
+
+function scheduleStreamingSearchRefresh() {
+  if (state.realtimeStreaming.pendingUiRefresh) return;
+  state.realtimeStreaming.pendingUiRefresh = true;
+  state.realtimeStreaming.uiRefreshTimer = setTimeout(() => {
+    state.realtimeStreaming.pendingUiRefresh = false;
+    if (state.stage === 'READY' && state.currentQuery.trim()) {
+      handleSearch();
+    }
+  }, 500);
+}
+
+function stopRealtimeStreaming() {
+  state.realtimeStreaming.enabled = false;
+  state.realtimeStreaming.pendingUiRefresh = false;
+  if (state.realtimeStreaming.uiRefreshTimer) {
+    clearTimeout(state.realtimeStreaming.uiRefreshTimer);
+    state.realtimeStreaming.uiRefreshTimer = null;
+  }
 }
 
 /**
@@ -1981,6 +2744,7 @@ function renderVirtualScroll() {
   
   elements.emptyState?.classList.add('hidden');
   elements.loadingState?.classList.add('hidden');
+  updateResultsToolbarVisibility(true);
   
   // Calculate visible range
   const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - bufferSize);
@@ -2137,11 +2901,14 @@ function escapeAttr(text) {
 /**
  * Open advanced search modal
  */
-function openAdvancedSearchModal() {
+async function openAdvancedSearchModal() {
   if (!elements.advancedSearchModal) return;
   
-  // Load saved filters from metadata
-  loadFiltersFromDb();
+  // Load saved filters and available options
+  await Promise.all([
+    loadFiltersFromDb(),
+    populateFilters()
+  ]);
   
   // Render modal content and summaries
   renderModalFilters();
@@ -2219,6 +2986,476 @@ function openShortcutsModal() {
 function closeShortcutsModal() {
   if (!elements.shortcutsModal) return;
   elements.shortcutsModal.classList.add('hidden');
+}
+
+async function resolveWarmStartLanguages() {
+  try {
+    const catalog = await db.getCatalog();
+    const availableCultures = [...new Set(catalog.map(entry => entry.culture).filter(Boolean))];
+    const selected = pickAvailablePriorityLanguages(availableCultures, navigator.language, 3);
+    return selected.length ? selected : buildPriorityLanguages().slice(0, 3);
+  } catch (err) {
+    console.warn('Failed to resolve warm-start languages from catalog:', err);
+    return buildPriorityLanguages().slice(0, 3);
+  }
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+}
+
+function formatMs(ms) {
+  const value = Number(ms) || 0;
+  if (value < 1000) return `${Math.round(value)}ms`;
+  return `${(value / 1000).toFixed(2)}s`;
+}
+
+async function openStatsDashboardModal() {
+  if (!elements.statsDashboardModal) return;
+
+  const catalog = await db.getCatalog();
+  if (!catalog.length) {
+    showInfo('No indexed dataset statistics available yet.');
+    return;
+  }
+
+  const modelMap = new Map();
+  let totalFiles = 0;
+  let totalLabels = 0;
+  let totalBytes = 0;
+  let totalProcessingMs = 0;
+
+  for (const entry of catalog) {
+    totalFiles += entry.fileCount || 0;
+    totalLabels += entry.labelCount || 0;
+    totalBytes += entry.totalBytes || 0;
+    totalProcessingMs += entry.totalProcessingMs || 0;
+
+    const modelAgg = modelMap.get(entry.model) || {
+      model: entry.model,
+      files: 0,
+      labels: 0,
+      bytes: 0,
+      processingMs: 0
+    };
+    modelAgg.files += entry.fileCount || 0;
+    modelAgg.labels += entry.labelCount || 0;
+    modelAgg.bytes += entry.totalBytes || 0;
+    modelAgg.processingMs += entry.totalProcessingMs || 0;
+    modelMap.set(entry.model, modelAgg);
+  }
+
+  const globalSpeed = totalProcessingMs > 0
+    ? Math.round(totalLabels / (totalProcessingMs / 1000))
+    : 0;
+
+  if (elements.statsTotalModels) {
+    elements.statsTotalModels.textContent = modelMap.size.toLocaleString();
+  }
+  if (elements.statsTotalFiles) {
+    elements.statsTotalFiles.textContent = totalFiles.toLocaleString();
+  }
+  if (elements.statsTotalSize) {
+    elements.statsTotalSize.textContent = formatBytes(totalBytes);
+  }
+  if (elements.statsGlobalSpeed) {
+    elements.statsGlobalSpeed.textContent = `${globalSpeed.toLocaleString()}/s`;
+  }
+
+  const modelRows = [...modelMap.values()].sort((a, b) => b.labels - a.labels).map((entry) => `
+    <div class="language-status-item ready">
+      <span class="model-name">${escapeHtml(entry.model)}</span>
+      <span class="language-name">${entry.files.toLocaleString()} files</span>
+      <div class="language-progress-cell">
+        <span class="language-progress-text">${entry.labels.toLocaleString()} labels</span>
+      </div>
+      <span class="language-status-badge">⏱️ ${formatMs(entry.processingMs)}</span>
+    </div>
+  `);
+  if (elements.statsModelList) {
+    elements.statsModelList.innerHTML = modelRows.join('');
+  }
+
+  const pairRows = catalog
+    .slice()
+    .sort((a, b) => (b.totalProcessingMs || 0) - (a.totalProcessingMs || 0))
+    .map((entry) => `
+      <div class="language-status-item ${entry.status === 'ready' ? 'ready' : 'indexing'}">
+        <span class="model-name">${escapeHtml(entry.model)}</span>
+        <span class="language-name">${formatLanguageDisplay(entry.culture)}</span>
+        <div class="language-progress-cell">
+          <span class="language-progress-text">${(entry.labelCount || 0).toLocaleString()} • ${formatBytes(entry.totalBytes || 0)}</span>
+        </div>
+        <span class="language-status-badge">⏱️ ${formatMs(entry.totalProcessingMs || 0)}</span>
+      </div>
+    `);
+  if (elements.statsPairList) {
+    elements.statsPairList.innerHTML = pairRows.join('');
+  }
+
+  elements.statsDashboardModal.classList.remove('hidden');
+}
+
+function closeStatsDashboardModal() {
+  elements.statsDashboardModal?.classList.add('hidden');
+}
+
+// ============================================
+// SPEC-23: Background Indexing Functions
+// ============================================
+
+/**
+ * Show background progress indicator in header
+ */
+function showBackgroundProgressIndicator() {
+  if (elements.btnBackgroundProgress) {
+    elements.btnBackgroundProgress.classList.remove('hidden');
+  }
+  state.backgroundIndexing.completionSummary = null;
+  renderBackgroundSummary();
+  updateLabelCount();
+}
+
+/**
+ * Hide background progress indicator
+ */
+function hideBackgroundProgressIndicator() {
+  if (elements.btnBackgroundProgress) {
+    elements.btnBackgroundProgress.classList.add('hidden');
+    const textSpan = elements.btnBackgroundProgress.querySelector('.progress-text');
+    if (textSpan) {
+      textSpan.textContent = t('header_indexing_active', { percent: 0, count: '0' });
+    }
+  }
+  if (state.indexingMode === 'idle') {
+    hideLiveIndexLine();
+  }
+}
+
+/**
+ * Update background progress in header button
+ */
+function updateBackgroundProgress(processedFiles, totalFiles, totalLabels) {
+  state.backgroundIndexing.processedFiles = processedFiles;
+  state.backgroundIndexing.totalFiles = totalFiles;
+  state.backgroundIndexing.totalLabels = totalLabels;
+  const percent = totalFiles > 0 ? Math.round((processedFiles / totalFiles) * 100) : 0;
+  updateLiveIndexLine(percent);
+  scheduleBackgroundProgressUIUpdate();
+}
+
+function mergeBackgroundPairProgress(pairProgress, statusOverride = null) {
+  if (!Array.isArray(pairProgress)) return;
+
+  for (const pair of pairProgress) {
+    const key = pair.key || `${pair.model}|||${pair.culture}`;
+    if (!key) continue;
+    const existing = state.backgroundIndexing.languageStatus.get(key) || {
+      key,
+      model: pair.model,
+      culture: pair.culture,
+      fileCount: pair.fileCount || 0,
+      processedFiles: 0,
+      labelCount: 0,
+      status: 'waiting',
+      isPriority: state.backgroundIndexing.priorityLanguages.includes(pair.culture)
+    };
+
+    existing.fileCount = pair.fileCount ?? existing.fileCount;
+    existing.processedFiles = pair.processedFiles ?? existing.processedFiles;
+    existing.labelCount = pair.labelCount ?? existing.labelCount;
+    existing.totalProcessingMs = pair.totalProcessingMs ?? existing.totalProcessingMs ?? 0;
+    existing.totalBytes = pair.totalBytes ?? existing.totalBytes ?? 0;
+    existing.firstStartedAt = pair.firstStartedAt ?? existing.firstStartedAt ?? null;
+    existing.lastEndedAt = pair.lastEndedAt ?? existing.lastEndedAt ?? null;
+    if (statusOverride) {
+      existing.status = statusOverride;
+    } else if (existing.processedFiles > 0 && existing.status === 'waiting') {
+      existing.status = 'indexing';
+    }
+
+    state.backgroundIndexing.languageStatus.set(key, existing);
+  }
+}
+
+let catalogFlushTimer = null;
+const catalogPendingUpdates = new Map();
+
+function queueCatalogProgressFlush() {
+  if (state.indexingMode === 'idle') return;
+  for (const entry of state.backgroundIndexing.languageStatus.values()) {
+    catalogPendingUpdates.set(entry.key, {
+      processedFiles: entry.processedFiles,
+      labelCount: entry.labelCount,
+      metrics: {
+        totalProcessingMs: entry.totalProcessingMs || 0,
+        totalBytes: entry.totalBytes || 0,
+        firstStartedAt: entry.firstStartedAt || null,
+        lastEndedAt: entry.lastEndedAt || null
+      }
+    });
+  }
+
+  if (catalogFlushTimer) return;
+  catalogFlushTimer = setTimeout(async () => {
+    await flushCatalogProgressNow();
+  }, 500);
+}
+
+/**
+ * Open background progress modal
+ */
+function openBackgroundProgressModal() {
+  if (!elements.backgroundProgressModal) return;
+  renderBackgroundSummary();
+  renderBackgroundLanguageList();
+  elements.backgroundProgressModal.classList.remove('hidden');
+}
+
+/**
+ * Close background progress modal
+ */
+function closeBackgroundProgressModal() {
+  if (!elements.backgroundProgressModal) return;
+  elements.backgroundProgressModal.classList.add('hidden');
+}
+
+function flushCatalogProgressNow() {
+  if (catalogFlushTimer) {
+    clearTimeout(catalogFlushTimer);
+    catalogFlushTimer = null;
+  }
+
+  return (async () => {
+    const updates = [...catalogPendingUpdates.entries()];
+    catalogPendingUpdates.clear();
+    for (const [key, update] of updates) {
+      try {
+        await db.updateCatalogProgress(key, update.processedFiles, update.labelCount, update.metrics || null);
+      } catch (err) {
+        console.warn('Failed to flush catalog progress for', key, err);
+      }
+    }
+  })();
+}
+
+function scheduleBackgroundProgressUIUpdate() {
+  if (state.backgroundIndexing.updateScheduled) return;
+  state.backgroundIndexing.updateScheduled = true;
+
+  requestAnimationFrame(() => {
+    state.backgroundIndexing.updateScheduled = false;
+    renderBackgroundProgressUI();
+  });
+}
+
+function renderBackgroundProgressUI() {
+  const processedFiles = state.backgroundIndexing.processedFiles;
+  const totalFiles = state.backgroundIndexing.totalFiles;
+  const totalLabels = state.backgroundIndexing.totalLabels;
+  const percent = totalFiles > 0 ? Math.round((processedFiles / totalFiles) * 100) : 0;
+  const elapsed = state.backgroundIndexing.startTime
+    ? (performance.now() - state.backgroundIndexing.startTime) / 1000
+    : 0;
+  const labelsPerSec = elapsed > 0 ? Math.round(totalLabels / elapsed) : 0;
+  state.backgroundIndexing.labelsPerSec = labelsPerSec;
+
+  if (elements.btnBackgroundProgress) {
+    const textSpan = elements.btnBackgroundProgress.querySelector('.progress-text');
+    if (textSpan) {
+      textSpan.textContent = t('header_indexing_active', {
+        percent,
+        count: totalLabels.toLocaleString()
+      });
+    }
+  }
+
+  if (elements.bgTotalLabels) {
+    elements.bgTotalLabels.textContent = totalLabels.toLocaleString();
+  }
+  if (elements.bgTotalPercent) {
+    elements.bgTotalPercent.textContent = `${percent}%`;
+  }
+  if (elements.bgProgressFill) {
+    elements.bgProgressFill.style.width = `${percent}%`;
+  }
+  if (elements.bgSpeed) {
+    elements.bgSpeed.textContent = t('labels_per_second', { count: labelsPerSec.toLocaleString() });
+  }
+
+  if (elements.bgEta) {
+    if (processedFiles <= 0 || totalFiles <= 0 || labelsPerSec <= 0) {
+      elements.bgEta.textContent = '--';
+    } else {
+      const filesPerSec = processedFiles / elapsed;
+      const remaining = totalFiles - processedFiles;
+      const etaSeconds = filesPerSec > 0 ? Math.round(remaining / filesPerSec) : 0;
+      if (etaSeconds < 60) {
+        elements.bgEta.textContent = `${etaSeconds}s`;
+      } else {
+        elements.bgEta.textContent = `${Math.floor(etaSeconds / 60)}m ${etaSeconds % 60}s`;
+      }
+    }
+  }
+
+  state.totalLabels = state.backgroundIndexing.baseLabelCount + totalLabels;
+  if (state.totalLabels < state.backgroundIndexing.baseLabelCount) {
+    state.totalLabels = state.backgroundIndexing.baseLabelCount;
+  }
+  updateLabelCount();
+
+  if (!elements.backgroundProgressModal?.classList.contains('hidden')) {
+    renderBackgroundSummary();
+    renderBackgroundLanguageList();
+  }
+}
+
+function renderBackgroundSummary() {
+  if (!elements.bgSummary) return;
+  const summary = state.backgroundIndexing.completionSummary;
+  if (!summary) {
+    elements.bgSummary.classList.add('hidden');
+    elements.bgSummary.textContent = '';
+    return;
+  }
+
+  elements.bgSummary.textContent = t('background_summary_complete', {
+    labels: summary.labels.toLocaleString(),
+    files: summary.files.toLocaleString(),
+    speed: summary.speed.toLocaleString()
+  });
+  elements.bgSummary.classList.remove('hidden');
+}
+
+/**
+ * Render language status list in progress modal
+ */
+function renderBackgroundLanguageList() {
+  if (!elements.bgLanguageList) return;
+
+  const rows = [...state.backgroundIndexing.languageStatus.values()];
+  rows.sort((a, b) => {
+    if (a.isPriority && !b.isPriority) return -1;
+    if (!a.isPriority && b.isPriority) return 1;
+    if (a.model !== b.model) return a.model.localeCompare(b.model);
+    return a.culture.localeCompare(b.culture);
+  });
+
+  const items = rows.map((entry) => {
+    const statusClass = entry.status === 'indexing' ? 'processing' : entry.status;
+    const statusIcon = entry.status === 'ready' ? '✅' : entry.status === 'indexing' ? '⏳' : '💤';
+    const statusTextKey = entry.status === 'ready'
+      ? 'status_ready'
+      : entry.status === 'indexing'
+        ? 'status_processing'
+        : 'status_waiting';
+    const progressPercent = entry.fileCount > 0
+      ? Math.min(100, Math.round((entry.processedFiles / entry.fileCount) * 100))
+      : (entry.status === 'ready' ? 100 : 0);
+    const priorityBadge = entry.isPriority ? ` <span class="filter-status-indicator ready">⭐</span>` : '';
+
+    return `
+      <div class="language-status-item ${statusClass}">
+        <span class="model-name">${escapeHtml(entry.model)}${priorityBadge}</span>
+        <span class="language-name">${formatLanguageDisplay(entry.culture)}</span>
+        <div class="language-progress-cell">
+          <div class="language-progress-bar">
+            <div class="language-progress-fill" style="width:${progressPercent}%"></div>
+          </div>
+          <span class="language-progress-text">${progressPercent}%</span>
+        </div>
+        <span class="language-status-badge">${statusIcon} ${t(statusTextKey)}</span>
+      </div>
+    `;
+  });
+
+  elements.bgLanguageList.innerHTML = items.join('');
+}
+
+function getLanguageAggregateStatus(culture) {
+  const rows = [...state.backgroundIndexing.languageStatus.values()].filter((entry) => entry.culture === culture);
+  if (rows.length === 0) return null;
+
+  const hasProcessing = rows.some((entry) => entry.status === 'indexing');
+  const hasWaiting = rows.some((entry) => entry.status === 'waiting');
+  const allReady = rows.every((entry) => entry.status === 'ready');
+  return allReady ? 'ready' : (hasProcessing ? 'indexing' : (hasWaiting ? 'waiting' : 'ready'));
+}
+
+/**
+ * Start background indexing for non-priority languages
+ */
+async function startBackgroundIndexing(backgroundFiles) {
+  if (backgroundFiles.length === 0) {
+    state.indexingMode = 'idle';
+    hideBackgroundProgressIndicator();
+    return;
+  }
+  showLiveIndexLine();
+  
+  state.backgroundIndexing.totalFiles = backgroundFiles.length;
+  state.backgroundIndexing.processedFiles = 0;
+  state.backgroundIndexing.totalLabels = 0;
+  state.backgroundIndexing.completionSummary = null;
+  
+  // Use requestIdleCallback for low-priority processing (or setTimeout fallback)
+  const scheduleWork = window.requestIdleCallback || ((cb) => setTimeout(cb, 100));
+  
+  scheduleWork(async () => {
+    try {
+      const entryKeys = new Set(backgroundFiles.map(f => `${f.metadata.model}|||${f.metadata.culture}`));
+      for (const key of entryKeys) {
+        const entry = state.backgroundIndexing.languageStatus.get(key);
+        if (entry && entry.status !== 'ready') {
+          entry.status = 'indexing';
+        }
+      }
+      scheduleBackgroundProgressUIUpdate();
+
+      const result = await indexFilesWithWorkers(backgroundFiles, false);
+      const finalLabelCount = await db.getLabelCount();
+      
+      // Update language statuses to ready
+      for (const key of entryKeys) {
+        const status = state.backgroundIndexing.languageStatus.get(key);
+        if (status) {
+          status.status = 'ready';
+          status.processedFiles = status.fileCount;
+        }
+      }
+
+      state.backgroundIndexing.completionSummary = {
+        labels: result.totalLabels,
+        files: result.processedFiles,
+        speed: state.backgroundIndexing.labelsPerSec || 0
+      };
+      queueCatalogProgressFlush();
+      await flushCatalogProgressNow();
+      
+      state.indexingMode = 'idle';
+      hideBackgroundProgressIndicator();
+      
+      // Refresh label count
+      state.totalLabels = finalLabelCount;
+      updateLabelCount();
+      const completedAt = Date.now();
+      await db.setMetadata('lastIndexed', completedAt);
+      updateLastIndexedDisplay(completedAt);
+      renderBackgroundSummary();
+      renderBackgroundLanguageList();
+      
+      showSuccess(t('background_indexing_complete') || `Background indexing complete! ${result.totalLabels.toLocaleString()} additional labels indexed.`);
+      
+    } catch (err) {
+      console.error('Background indexing error:', err);
+      state.indexingMode = 'idle';
+      hideBackgroundProgressIndicator();
+    }
+  });
 }
 
 /**
@@ -2350,6 +3587,7 @@ function closeItemSelectorModal() {
 
 /**
  * Render selector modal list
+ * SPEC-23: Added status indicators for languages
  */
 function renderItemSelectorModal() {
   if (!elements.itemSelectorList) return;
@@ -2368,10 +3606,22 @@ function renderItemSelectorModal() {
   elements.itemSelectorList.innerHTML = filtered.map(item => {
     const checked = selected.includes(item);
     const label = type === 'models' ? escapeHtml(item) : formatLanguageDisplay(item);
+    
+    // SPEC-23: Add status indicator for languages
+    let statusIndicator = '';
+    if (type === 'cultures' || type === 'requiredCultures') {
+      const aggregateStatus = getLanguageAggregateStatus(item);
+      if (aggregateStatus) {
+        const statusIcon = aggregateStatus === 'ready' ? '✅' : aggregateStatus === 'indexing' ? '⏳' : '💤';
+        const statusClass = aggregateStatus;
+        statusIndicator = `<span class="filter-status-indicator ${statusClass}">${statusIcon}</span>`;
+      }
+    }
+    
     return `
       <label class="selector-item">
         <input type="checkbox" data-item="${escapeAttr(item)}" ${checked ? 'checked' : ''}>
-        <span>${label}</span>
+        <span>${label}${statusIndicator}</span>
       </label>
     `;
   }).join('');

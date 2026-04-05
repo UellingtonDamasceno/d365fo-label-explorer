@@ -252,6 +252,47 @@ export function setDisplayLocale(locale) {
   clearCache();
 }
 
+/**
+ * Build dynamic priority language list for warm-start/search-first flow.
+ * Order:
+ * 1) Browser language
+ * 2) en-US
+ * 3) pt-BR
+ * 4) es-ES
+ * @param {string|null} browserLanguage
+ * @returns {Array<string>}
+ */
+export function buildPriorityLanguages(browserLanguage = null) {
+  const preferred = normalizeCode(
+    browserLanguage || (typeof navigator !== 'undefined' ? navigator.language : 'en-US')
+  );
+  const defaults = ['en-US', 'pt-BR', 'es-ES'];
+  const ordered = [preferred, ...defaults].filter(Boolean);
+  return [...new Set(ordered.map(normalizeCode))];
+}
+
+/**
+ * Pick only priority languages available in the discovered/catalog dataset.
+ * @param {Array<string>} availableCultures
+ * @param {string|null} browserLanguage
+ * @param {number} limit
+ * @returns {Array<string>}
+ */
+export function pickAvailablePriorityLanguages(availableCultures = [], browserLanguage = null, limit = 3) {
+  const available = new Set((availableCultures || []).map(normalizeCode));
+  const ordered = buildPriorityLanguages(browserLanguage);
+  const selected = [];
+
+  for (const culture of ordered) {
+    if (available.has(culture)) {
+      selected.push(culture);
+      if (selected.length >= limit) break;
+    }
+  }
+
+  return selected;
+}
+
 export default {
   normalizeCode,
   getLanguageName,
@@ -259,5 +300,7 @@ export default {
   getLanguageFlag,
   formatLanguageDisplay,
   clearCache,
-  setDisplayLocale
+  setDisplayLocale,
+  buildPriorityLanguages,
+  pickAvailablePriorityLanguages
 };

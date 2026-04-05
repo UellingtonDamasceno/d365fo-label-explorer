@@ -102,10 +102,11 @@ export function getSettings() {
 
 /**
  * Open IndexedDB connection
+ * SPEC-23: Version bumped to 3 for catalog store
  */
 function openDB() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('d365fo-labels', 1);
+    const request = indexedDB.open('d365fo-labels', 3);
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
@@ -246,8 +247,15 @@ async function searchFlexSearch(query, options = {}) {
     await initSearch();
   }
   
-  // Check if we need to load more data into FlexSearch
-  await ensureModelLoaded(model, culture);
+  // FIX: For global searches (no filters), ensure priority languages are loaded
+  if (!model && !culture) {
+    if (modelCache.size === 0) {
+      await preloadPriorityLanguages();
+    }
+  } else {
+    // Check if we need to load specific model/culture into FlexSearch
+    await ensureModelLoaded(model, culture);
+  }
   
   // Perform FlexSearch
   const searchResults = searchIndex.search(query, {
@@ -285,6 +293,12 @@ async function searchFlexSearch(query, options = {}) {
     if (modelCache.has(cacheKey)) {
       modelCache.get(cacheKey).lastAccess = Date.now();
     }
+  }
+  
+  // FALLBACK: If FlexSearch returned nothing in a global search, try Level 1 (IndexedDB)
+  if (matchedLabels.length === 0 && !model && !culture) {
+    console.log('🔍 FlexSearch returned no results, falling back to IndexedDB scan...');
+    return searchIndexedDB(query, options);
   }
   
   return matchedLabels.slice(0, limit);
@@ -364,7 +378,7 @@ async function loadModelIntoFlexSearch(model, culture) {
       if (cursor) {
         const label = cursor.value;
         
-        if (label.culture === culture) {
+        if (!culture || label.culture === culture) {
           const doc = {
             ...label,
             searchTarget: `${label.labelId} ${label.text} ${label.help || ''} ${label.fullId}`
@@ -388,6 +402,53 @@ async function loadModelIntoFlexSearch(model, culture) {
     
     request.onerror = () => reject(request.error);
   });
+}
+
+/**
+ * JIT preload: load up to N models whose names match the query
+ * @param {string} query
+ * @param {number} limit
+ */
+export async function preloadModelsByName(query, limit = 3) {
+  const normalized = (query || '').trim().toLowerCase();
+  if (!normalized) return;
+  if (!searchIndex) {
+    await initSearch();
+  }
+
+  const db = await openDB();
+  const tx = db.transaction('labels', 'readonly');
+  const store = tx.objectStore('labels');
+  const index = store.index('model');
+
+  const models = await new Promise((resolve, reject) => {
+    const request = index.openCursor(null, 'nextunique');
+    const values = [];
+
+    request.onsuccess = (event) => {
+      const cursor = event.target.result;
+      if (cursor) {
+        values.push(cursor.key);
+        cursor.continue();
+      } else {
+        resolve(values);
+      }
+    };
+    request.onerror = () => reject(request.error);
+  });
+
+  const targetModels = models
+    .filter((model) => model.toLowerCase().includes(normalized))
+    .slice(0, limit);
+
+  for (const model of targetModels) {
+    const relatedKeys = [...modelCache.keys()].filter((cacheKey) => cacheKey.startsWith(`${model}|`));
+    if (relatedKeys.length > 0) continue;
+    if (modelCache.size >= searchSettings.maxModelsInMemory) {
+      await evictLRU();
+    }
+    await loadModelIntoFlexSearch(model, null);
+  }
 }
 
 /**
@@ -436,25 +497,49 @@ export function isReady() {
  * @param {Array<string>} cultures - Culture codes to pre-load
  */
 export async function preloadPriorityLanguages(cultures = null) {
-  const languagesToLoad = cultures || searchSettings.priorityLanguages;
-  
+  const requestedLanguages = cultures || searchSettings.priorityLanguages;
+  if (cultures && Array.isArray(cultures)) {
+    searchSettings.priorityLanguages = [...cultures];
+  }
+
+  if (!requestedLanguages || requestedLanguages.length === 0) return;
+
+  if (!searchIndex) {
+    await initSearch();
+  }
+
+  console.time('⏳ Preload Priority Languages (FlexSearch)');
+
   // Get list of models from IndexedDB
   const db = await openDB();
   const tx = db.transaction('labels', 'readonly');
   const store = tx.objectStore('labels');
   const index = store.index('culture');
-  
+  const languagesToLoad = [];
+
+  for (const culture of requestedLanguages) {
+    const count = await new Promise((resolve) => {
+      const countRequest = index.count(IDBKeyRange.only(culture));
+      countRequest.onsuccess = () => resolve(countRequest.result || 0);
+      countRequest.onerror = () => resolve(0);
+    });
+    if (count > 0) {
+      languagesToLoad.push(culture);
+      if (languagesToLoad.length >= 3) break;
+    }
+  }
+
   for (const culture of languagesToLoad) {
     // Load a sample to prime the cache
     const request = index.openCursor(IDBKeyRange.only(culture));
-    
+
     await new Promise((resolve) => {
       let count = 0;
       const maxPreload = 10000; // Limit preload
-      
+
       request.onsuccess = (event) => {
         const cursor = event.target.result;
-        
+
         if (cursor && count < maxPreload) {
           const label = cursor.value;
           const doc = {
@@ -462,14 +547,14 @@ export async function preloadPriorityLanguages(cultures = null) {
             searchTarget: `${label.labelId} ${label.text} ${label.help || ''} ${label.fullId}`
           };
           searchIndex.add(doc);
-          
+
           const cacheKey = `${label.model}|${label.culture}`;
           if (!modelCache.has(cacheKey)) {
             modelCache.set(cacheKey, { lastAccess: Date.now(), labelCount: 0, ids: [] });
           }
           modelCache.get(cacheKey).labelCount++;
           modelCache.get(cacheKey).ids.push(label.id);
-          
+
           count++;
           cursor.continue();
         } else {
@@ -477,11 +562,11 @@ export async function preloadPriorityLanguages(cultures = null) {
           resolve();
         }
       };
-      
+
       request.onerror = () => resolve();
     });
   }
-}
 
-// Export for backwards compatibility
+  console.timeEnd('⏳ Preload Priority Languages (FlexSearch)');
+}// Export for backwards compatibility
 export { searchIndex };

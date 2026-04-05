@@ -31,7 +31,7 @@ export const translations = {
     building_index: 'Building search index...',
     
     // Header
-    labels_indexed: '{count} labels indexed',
+    labels_indexed_count: '{count} labels indexed',
     last_indexed: 'Last indexed: {date}',
     btn_rescan: 'Re-scan',
     
@@ -85,6 +85,14 @@ export const translations = {
     interface_language: 'Interface Language',
     lang_auto: 'Auto (Browser)',
     btn_apply_settings: 'Apply Settings',
+    // SPEC-19: Search Performance Settings
+    search_performance: '🔍 Search Performance',
+    enable_hybrid_search: 'Enable Hybrid Search',
+    hint_hybrid_search: 'Uses memory cache for fast fuzzy search. Disable to force IndexedDB-only searches (slower but uses less RAM).',
+    max_models_memory: 'Max Models in Memory',
+    hint_max_models: 'Higher values = faster search, more RAM usage (default: 5)',
+    fuzzy_threshold: 'Fuzzy Search Threshold',
+    hint_fuzzy_threshold: 'Lower = stricter matching, Higher = more tolerance for typos',
     
     // Item Selector Modal
     select_items: 'Select Items',
@@ -148,7 +156,35 @@ export const translations = {
     shortcut_nav_up: 'Previous result',
     shortcut_copy: 'Copy Label ID',
     shortcut_details: 'Open details',
-    shortcut_undo: 'Undo selection'
+    shortcut_undo: 'Undo selection',
+    
+    // SPEC-23: Tiered Discovery & Background Indexing
+    recommended_quick_start: 'Quick Start (Recommended)',
+    recommended_hint: 'Start searching in ~5 seconds',
+    btn_quick_start: 'Start Quick Search',
+    background_indexing_label: 'Index remaining languages in background',
+    advanced_selection: 'Advanced Selection',
+    btn_index_selected: 'Index All Selected',
+    background_indexing_title: 'Background Indexing',
+    labels_indexed: 'Labels Indexed',
+    overall_progress: 'Overall Progress',
+    estimated_time: 'Est. Remaining',
+    labels_indexed: 'Labels Indexed',
+    processing_speed: 'Processing Speed',
+    language_status: 'Language Status',
+    model_column: 'Model',
+    language_column: 'Language',
+    progress_column: 'Progress',
+    status_column: 'Status',
+    status_ready: 'Ready',
+    status_processing: 'Processing',
+    status_waiting: 'Waiting',
+    labels_per_second: '{count}/s',
+    header_indexing_active: '📦 Indexing: {percent}% ({count} labels)',
+    background_summary_complete: 'Completed: {labels} labels across {files} files at {speed}/s',
+    background_hint: 'You can continue searching while indexing completes.',
+    no_priority_languages_found: 'No priority languages found in this folder',
+    background_indexing_complete: 'Background indexing complete!'
   },
   
   'pt-BR': {
@@ -178,7 +214,7 @@ export const translations = {
     building_index: 'Construindo índice de busca...',
     
     // Header
-    labels_indexed: '{count} labels indexados',
+    labels_indexed_count: '{count} labels indexados',
     last_indexed: 'Última indexação: {date}',
     btn_rescan: 'Re-escanear',
     
@@ -232,6 +268,14 @@ export const translations = {
     interface_language: 'Idioma da Interface',
     lang_auto: 'Automático (Navegador)',
     btn_apply_settings: 'Aplicar Configurações',
+    // SPEC-19: Search Performance Settings
+    search_performance: '🔍 Desempenho de Busca',
+    enable_hybrid_search: 'Habilitar Busca Híbrida',
+    hint_hybrid_search: 'Usa cache em memória para busca fuzzy rápida. Desabilite para forçar busca apenas no IndexedDB (mais lenta mas usa menos RAM).',
+    max_models_memory: 'Máx. Modelos em Memória',
+    hint_max_models: 'Valores maiores = busca mais rápida, mais uso de RAM (padrão: 5)',
+    fuzzy_threshold: 'Tolerância de Busca Fuzzy',
+    hint_fuzzy_threshold: 'Menor = busca mais exata, Maior = mais tolerância a erros de digitação',
     
     // Item Selector Modal
     select_items: 'Selecionar Itens',
@@ -295,7 +339,35 @@ export const translations = {
     shortcut_nav_up: 'Resultado anterior',
     shortcut_copy: 'Copiar Label ID',
     shortcut_details: 'Abrir detalhes',
-    shortcut_undo: 'Desfazer seleção'
+    shortcut_undo: 'Desfazer seleção',
+    
+    // SPEC-23: Tiered Discovery & Background Indexing
+    recommended_quick_start: 'Início Rápido (Recomendado)',
+    recommended_hint: 'Comece a buscar em ~5 segundos',
+    btn_quick_start: 'Iniciar Busca Rápida',
+    background_indexing_label: 'Indexar idiomas restantes em segundo plano',
+    advanced_selection: 'Seleção Avançada',
+    btn_index_selected: 'Indexar Todos Selecionados',
+    background_indexing_title: 'Indexação em Segundo Plano',
+    labels_indexed: 'Labels Indexados',
+    overall_progress: 'Progresso Total',
+    estimated_time: 'Tempo Restante',
+    labels_indexed: 'Labels Indexados',
+    processing_speed: 'Velocidade',
+    language_status: 'Status por Idioma',
+    model_column: 'Modelo',
+    language_column: 'Idioma',
+    progress_column: 'Progresso',
+    status_column: 'Status',
+    status_ready: 'Pronto',
+    status_processing: 'Processando',
+    status_waiting: 'Aguardando',
+    labels_per_second: '{count}/s',
+    header_indexing_active: '📦 Indexando: {percent}% ({count} labels)',
+    background_summary_complete: 'Concluído: {labels} labels em {files} arquivos a {speed}/s',
+    background_hint: 'Você pode continuar buscando enquanto a indexação completa.',
+    no_priority_languages_found: 'Nenhum idioma prioritário encontrado nesta pasta',
+    background_indexing_complete: 'Indexação em segundo plano concluída!'
   }
 };
 
