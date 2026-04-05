@@ -356,6 +356,74 @@
             </div>
           </div>
         </div>
+
+        <!-- SPEC-35: AI & Intelligence -->
+        <div class="filter-section ai-settings-section">
+          <label class="filter-label" data-i18n="ai_settings_title">✨ AI & Intelligence</label>
+
+          <label class="toggle-container">
+            <input type="checkbox" id="setting-ai-enabled">
+            <span class="toggle-switch"></span>
+            <span class="toggle-label" data-i18n="ai_enable_local">Enable Local AI Intelligence</span>
+          </label>
+          <small class="setting-hint" data-i18n="ai_enable_hint">Enables local translation and semantic label ID suggestions. Initial model download is stored in your browser cache.</small>
+
+          <div class="ai-download-controls">
+            <button id="btn-ai-download-model" class="btn btn-outline btn-sm">
+              🤖 <span data-i18n="ai_download_model">Download AI Model</span>
+            </button>
+            <span id="ai-status-badge" class="ai-status-badge" data-status="inactive" data-i18n="ai_status_inactive">Inactive</span>
+          </div>
+
+          <div id="ai-download-progress" class="ai-progress hidden">
+            <div class="progress-bar">
+              <div id="ai-download-fill" class="progress-fill"></div>
+            </div>
+            <span id="ai-download-label" class="ai-progress-label">0%</span>
+          </div>
+
+          <div id="ai-unlocked-options" class="ai-options">
+            <label class="toggle-container">
+              <input type="checkbox" id="setting-ai-semantic-id">
+              <span class="toggle-switch"></span>
+              <span class="toggle-label" data-i18n="ai_semantic_id">Semantic ID Suggestion</span>
+            </label>
+
+            <label class="toggle-container">
+              <input type="checkbox" id="setting-ai-auto-translate">
+              <span class="toggle-switch"></span>
+              <span class="toggle-label" data-i18n="ai_auto_translate_discovery">Auto-Translate on Discovery</span>
+            </label>
+
+            <div class="display-option">
+              <label class="display-option-label" data-i18n="ai_language_pair">Default Translation Pair</label>
+              <div class="ai-language-pair">
+                <select id="setting-ai-source-language" class="sort-select">
+                  <option value="auto" data-i18n="ai_lang_auto">Auto detect</option>
+                  <option value="en-US">English (en-US)</option>
+                  <option value="pt-BR">Português (pt-BR)</option>
+                  <option value="es-ES">Español (es-ES)</option>
+                  <option value="fr-FR">Français (fr-FR)</option>
+                  <option value="de-DE">Deutsch (de-DE)</option>
+                </select>
+                <span class="ai-arrow">→</span>
+                <select id="setting-ai-target-language" class="sort-select">
+                  <option value="en-US">English (en-US)</option>
+                  <option value="pt-BR">Português (pt-BR)</option>
+                  <option value="es-ES">Español (es-ES)</option>
+                  <option value="fr-FR">Français (fr-FR)</option>
+                  <option value="de-DE">Deutsch (de-DE)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <p id="ai-locked-hint" class="setting-hint" data-i18n="ai_locked_hint">AI options are unlocked after enabling Local AI and finishing model download.</p>
+
+          <button id="btn-ai-clear-cache" class="btn btn-outline btn-sm ai-clear-btn">
+            🧹 <span data-i18n="ai_clear_cache">Clear AI Cache</span>
+          </button>
+        </div>
       </div>
       <div class="modal-footer">
         <button id="btn-apply-settings" class="btn btn-primary" data-i18n="btn_apply_settings">Apply Settings</button>

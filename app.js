@@ -83,6 +83,17 @@ const state = {
     pendingUiRefresh: false,
     uiRefreshTimer: null,
     linePercent: 0
+  },
+  ai: {
+    enabled: false,
+    status: 'inactive', // inactive | downloading | ready
+    progress: 0,
+    progressPhase: 'downloading',
+    semanticIdSuggestion: false,
+    autoTranslateOnDiscovery: false,
+    sourceLanguage: 'auto',
+    targetLanguage: 'en-US',
+    worker: null
   }
 };
 
@@ -262,6 +273,20 @@ function cacheElements() {
     btnApplySettings: document.getElementById('btn-apply-settings'),
     uiLanguageSelect: document.getElementById('ui-language-select'),
     settingDirectSaveMode: document.getElementById('setting-direct-save-mode'),
+    // SPEC-35: AI & Intelligence settings
+    settingAiEnabled: document.getElementById('setting-ai-enabled'),
+    btnAiDownloadModel: document.getElementById('btn-ai-download-model'),
+    aiStatusBadge: document.getElementById('ai-status-badge'),
+    aiDownloadProgress: document.getElementById('ai-download-progress'),
+    aiDownloadFill: document.getElementById('ai-download-fill'),
+    aiDownloadLabel: document.getElementById('ai-download-label'),
+    aiUnlockedOptions: document.getElementById('ai-unlocked-options'),
+    aiLockedHint: document.getElementById('ai-locked-hint'),
+    settingAiSemanticId: document.getElementById('setting-ai-semantic-id'),
+    settingAiAutoTranslate: document.getElementById('setting-ai-auto-translate'),
+    settingAiSourceLanguage: document.getElementById('setting-ai-source-language'),
+    settingAiTargetLanguage: document.getElementById('setting-ai-target-language'),
+    btnAiClearCache: document.getElementById('btn-ai-clear-cache'),
     // SPEC-19: Hybrid Search Settings
     settingHybridSearch: document.getElementById('setting-hybrid-search'),
     settingMaxModels: document.getElementById('setting-max-models'),
@@ -468,6 +493,9 @@ function setupEventListeners() {
   elements.btnApplyFilters?.addEventListener('click', applyFilters);
   elements.btnApplySettings?.addEventListener('click', applySystemSettings);
   elements.btnClearFilters?.addEventListener('click', clearAllFilters);
+  elements.btnAiDownloadModel?.addEventListener('click', startAiModelDownload);
+  elements.btnAiClearCache?.addEventListener('click', clearAiCache);
+  elements.settingAiEnabled?.addEventListener('change', updateAiSettingsUI);
   
   // SPEC-19: Fuzzy threshold slider live preview
   elements.settingFuzzyThreshold?.addEventListener('input', (e) => {
@@ -2426,7 +2454,8 @@ async function showMainInterface(lastIndexed = null) {
   Promise.all([
     loadFiltersFromDb(),
     loadDisplaySettingsFromDb(),
-    loadSortPreferenceFromDb()
+    loadSortPreferenceFromDb(),
+    loadAiSettingsFromDb()
   ]).then(() => {
     renderFilterPills();
     updateModalSelectionSummaries();
@@ -3126,6 +3155,8 @@ function closeAdvancedSearchModal() {
 function openSystemSettingsModal() {
   if (!elements.systemSettingsModal) return;
   loadDisplaySettingsFromDb().then(async () => {
+    await loadAiSettingsFromDb();
+
     const formatRadio = document.getElementById(`format-${state.displaySettings.labelFormat}`);
     if (formatRadio) {
       formatRadio.checked = true;
@@ -3139,6 +3170,22 @@ function openSystemSettingsModal() {
     if (elements.settingDirectSaveMode) {
       elements.settingDirectSaveMode.checked = !!state.displaySettings.builderDirectSaveMode;
     }
+    if (elements.settingAiEnabled) {
+      elements.settingAiEnabled.checked = !!state.ai.enabled;
+    }
+    if (elements.settingAiSemanticId) {
+      elements.settingAiSemanticId.checked = !!state.ai.semanticIdSuggestion;
+    }
+    if (elements.settingAiAutoTranslate) {
+      elements.settingAiAutoTranslate.checked = !!state.ai.autoTranslateOnDiscovery;
+    }
+    if (elements.settingAiSourceLanguage) {
+      elements.settingAiSourceLanguage.value = state.ai.sourceLanguage || 'auto';
+    }
+    if (elements.settingAiTargetLanguage) {
+      elements.settingAiTargetLanguage.value = state.ai.targetLanguage || 'en-US';
+    }
+    updateAiSettingsUI();
     
     // SPEC-19: Load hybrid search settings
     const searchSettings = searchService.getSettings();
@@ -4570,6 +4617,11 @@ async function applySystemSettings() {
   state.displaySettings.groupDuplicates = elements.modalGroupDuplicates?.checked || false;
   state.displaySettings.uiLanguage = elements.uiLanguageSelect?.value || 'auto';
   state.displaySettings.builderDirectSaveMode = elements.settingDirectSaveMode?.checked || false;
+  state.ai.enabled = elements.settingAiEnabled?.checked || false;
+  state.ai.semanticIdSuggestion = elements.settingAiSemanticId?.checked || false;
+  state.ai.autoTranslateOnDiscovery = elements.settingAiAutoTranslate?.checked || false;
+  state.ai.sourceLanguage = elements.settingAiSourceLanguage?.value || 'auto';
+  state.ai.targetLanguage = elements.settingAiTargetLanguage?.value || 'en-US';
 
   // Update language display locale (for flag and name formatting)
   if (state.displaySettings.uiLanguage === 'auto') {
@@ -4582,6 +4634,7 @@ async function applySystemSettings() {
   setLanguage(state.displaySettings.uiLanguage);
   updateInterfaceText();
   applyBuilderDirectSaveVisualState();
+  updateAiSettingsUI();
 
   // SPEC-19: Save hybrid search settings
   const searchSettings = {
@@ -4592,10 +4645,210 @@ async function applySystemSettings() {
   await searchService.saveSettings(searchSettings);
   console.log('🔍 Search settings updated:', searchSettings);
 
-  saveDisplaySettingsToDb();
+  await Promise.all([
+    saveDisplaySettingsToDb(),
+    saveAiSettingsToDb()
+  ]);
+
+  if (state.ai.enabled && state.ai.status === 'inactive') {
+    showInfo(t('ai_download_required'));
+  }
+
   closeSystemSettingsModal();
   handleSearch();
   showInfo(t('toast_settings_applied'));
+}
+
+function isAiReadyAndEnabled() {
+  return state.ai.enabled && state.ai.status === 'ready';
+}
+
+function updateAiStatusBadge() {
+  if (!elements.aiStatusBadge) return;
+
+  let key = 'ai_status_inactive';
+  if (state.ai.status === 'downloading') key = 'ai_status_downloading';
+  if (state.ai.status === 'ready') key = 'ai_status_ready';
+
+  elements.aiStatusBadge.setAttribute('data-status', state.ai.status);
+  elements.aiStatusBadge.textContent = t(key);
+}
+
+function updateAiSettingsUI() {
+  const enabled = elements.settingAiEnabled?.checked ?? state.ai.enabled;
+  const unlocked = enabled && state.ai.status === 'ready';
+  const downloading = state.ai.status === 'downloading';
+
+  state.ai.enabled = enabled;
+
+  updateAiStatusBadge();
+
+  if (elements.aiDownloadFill) {
+    elements.aiDownloadFill.style.width = `${Math.max(0, Math.min(100, state.ai.progress))}%`;
+  }
+  if (elements.aiDownloadLabel) {
+    const phaseKey = state.ai.progressPhase === 'indexing' ? 'ai_phase_indexing' : 'ai_phase_downloading';
+    const label = state.ai.status === 'ready'
+      ? t('ai_progress_ready')
+      : `${t(phaseKey)} ${Math.round(state.ai.progress)}%`;
+    elements.aiDownloadLabel.textContent = label;
+  }
+  elements.aiDownloadProgress?.classList.toggle('hidden', !downloading && state.ai.progress <= 0);
+
+  if (elements.btnAiDownloadModel) {
+    elements.btnAiDownloadModel.disabled = !enabled || downloading || state.ai.status === 'ready';
+  }
+  if (elements.btnAiClearCache) {
+    elements.btnAiClearCache.disabled = downloading || state.ai.status === 'inactive';
+  }
+
+  elements.aiUnlockedOptions?.classList.toggle('ai-disabled', !unlocked);
+  elements.aiLockedHint?.classList.toggle('hidden', unlocked);
+
+  if (elements.settingAiSemanticId) elements.settingAiSemanticId.disabled = !unlocked;
+  if (elements.settingAiAutoTranslate) elements.settingAiAutoTranslate.disabled = !unlocked;
+  if (elements.settingAiSourceLanguage) elements.settingAiSourceLanguage.disabled = !unlocked;
+  if (elements.settingAiTargetLanguage) elements.settingAiTargetLanguage.disabled = !unlocked;
+}
+
+async function loadAiSettingsFromDb() {
+  try {
+    const [aiStatus, aiSettings] = await Promise.all([
+      db.getMetadata('aiStatus'),
+      db.getMetadata('aiSettings')
+    ]);
+
+    const validStatus = aiStatus === 'ready' || aiStatus === 'downloading' || aiStatus === 'inactive'
+      ? aiStatus
+      : 'inactive';
+
+    state.ai.status = validStatus === 'downloading' ? 'inactive' : validStatus;
+    state.ai.progress = state.ai.status === 'ready' ? 100 : 0;
+    state.ai.progressPhase = 'downloading';
+    state.ai.enabled = !!aiSettings?.enabled;
+    state.ai.semanticIdSuggestion = !!aiSettings?.semanticIdSuggestion;
+    state.ai.autoTranslateOnDiscovery = !!aiSettings?.autoTranslateOnDiscovery;
+    state.ai.sourceLanguage = aiSettings?.sourceLanguage || 'auto';
+    state.ai.targetLanguage = aiSettings?.targetLanguage || 'en-US';
+
+    if (validStatus === 'downloading') {
+      await db.setMetadata('aiStatus', 'inactive');
+    }
+  } catch (err) {
+    console.error('Failed to load AI settings:', err);
+    state.ai.status = 'inactive';
+    state.ai.progress = 0;
+  }
+}
+
+async function saveAiSettingsToDb() {
+  try {
+    await Promise.all([
+      db.setMetadata('aiStatus', state.ai.status),
+      db.setMetadata('aiSettings', {
+        enabled: state.ai.enabled,
+        semanticIdSuggestion: state.ai.semanticIdSuggestion,
+        autoTranslateOnDiscovery: state.ai.autoTranslateOnDiscovery,
+        sourceLanguage: state.ai.sourceLanguage,
+        targetLanguage: state.ai.targetLanguage
+      })
+    ]);
+  } catch (err) {
+    console.error('Failed to save AI settings:', err);
+  }
+}
+
+function ensureAiWorker() {
+  if (state.ai.worker) return state.ai.worker;
+
+  state.ai.worker = new Worker('./workers/ai-model.worker.js', { type: 'module' });
+  state.ai.worker.onmessage = async (event) => {
+    const { type, payload } = event.data || {};
+    if (type === 'PROGRESS') {
+      state.ai.status = 'downloading';
+      state.ai.progress = payload?.progress ?? 0;
+      state.ai.progressPhase = payload?.phase === 'indexing' ? 'indexing' : 'downloading';
+      updateAiSettingsUI();
+      return;
+    }
+
+    if (type === 'READY') {
+      state.ai.status = 'ready';
+      state.ai.progress = 100;
+      state.ai.progressPhase = 'indexing';
+      updateAiSettingsUI();
+      await saveAiSettingsToDb();
+      showSuccess(t('ai_ready_toast'));
+      return;
+    }
+
+    if (type === 'CACHE_CLEARED') {
+      state.ai.status = 'inactive';
+      state.ai.progress = 0;
+      state.ai.progressPhase = 'downloading';
+      state.ai.enabled = false;
+      state.ai.semanticIdSuggestion = false;
+      state.ai.autoTranslateOnDiscovery = false;
+      updateAiSettingsUI();
+      await saveAiSettingsToDb();
+      showInfo(t('ai_cache_cleared'));
+      return;
+    }
+
+    if (type === 'ERROR') {
+      state.ai.status = 'inactive';
+      state.ai.progress = 0;
+      state.ai.progressPhase = 'downloading';
+      updateAiSettingsUI();
+      await saveAiSettingsToDb();
+      showError(payload?.message || t('ai_error_generic'));
+    }
+  };
+
+  state.ai.worker.onerror = async (err) => {
+    console.error('AI worker error:', err);
+    state.ai.status = 'inactive';
+    state.ai.progress = 0;
+    state.ai.progressPhase = 'downloading';
+    updateAiSettingsUI();
+    await saveAiSettingsToDb();
+    showError(t('ai_error_generic'));
+  };
+
+  return state.ai.worker;
+}
+
+async function startAiModelDownload() {
+  if (!elements.settingAiEnabled?.checked) {
+    showInfo(t('ai_enable_first'));
+    return;
+  }
+  if (state.ai.status === 'downloading' || state.ai.status === 'ready') return;
+
+  state.ai.status = 'downloading';
+  state.ai.progress = 0;
+  state.ai.progressPhase = 'downloading';
+  updateAiSettingsUI();
+  await saveAiSettingsToDb();
+
+  const worker = ensureAiWorker();
+  worker.postMessage({
+    type: 'DOWNLOAD_MODEL',
+    payload: {
+      modelName: 'Xenova/m2m100_418M',
+      sourceLanguage: state.ai.sourceLanguage,
+      targetLanguage: state.ai.targetLanguage
+    }
+  });
+}
+
+async function clearAiCache() {
+  if (state.ai.status === 'downloading') return;
+  const confirmed = confirm(t('ai_clear_confirm'));
+  if (!confirmed) return;
+
+  const worker = ensureAiWorker();
+  worker.postMessage({ type: 'CLEAR_CACHE' });
 }
 
 /**

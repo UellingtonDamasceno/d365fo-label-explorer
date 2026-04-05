@@ -1544,6 +1544,92 @@ body {
   font-weight: 500;
 }
 
+/* SPEC-35: AI Settings */
+.ai-settings-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.875rem;
+  background: rgba(99, 102, 241, 0.03);
+}
+
+.ai-download-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.ai-status-badge {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.1875rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  background: var(--bg-light);
+}
+
+.ai-status-badge[data-status="downloading"] {
+  border-color: #f59e0b;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.15);
+}
+
+.ai-status-badge[data-status="ready"] {
+  border-color: var(--success);
+  color: var(--success);
+  background: rgba(16, 185, 129, 0.14);
+}
+
+.ai-progress {
+  margin-top: 0.625rem;
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.ai-progress .progress-bar {
+  flex: 1;
+  margin: 0;
+}
+
+.ai-progress-label {
+  min-width: 3.25rem;
+  text-align: right;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.ai-options {
+  display: grid;
+  gap: 0.625rem;
+  margin-top: 0.875rem;
+  padding: 0.75rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.ai-options.ai-disabled {
+  opacity: 0.55;
+}
+
+.ai-language-pair {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.ai-arrow {
+  color: var(--text-muted);
+}
+
+.ai-clear-btn {
+  margin-top: 0.75rem;
+}
+
 /* Model count badge */
 .model-count-badge {
   display: inline-flex;
@@ -3079,6 +3165,20 @@ body {
 
 /* Responsive */
 @media (max-width: 640px) {
+  .ai-download-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .ai-language-pair {
+    grid-template-columns: 1fr;
+  }
+
+  .ai-arrow {
+    text-align: center;
+    transform: rotate(90deg);
+  }
+
   .builder-modal-content {
     width: 98%;
     max-height: 95vh;
