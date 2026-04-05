@@ -235,6 +235,8 @@ function cacheElements() {
     lastIndexed: document.getElementById('last-indexed'),
     btnRescan: document.getElementById('btn-rescan'),
     btnHeaderChangeFolder: document.getElementById('btn-header-change-folder'),
+    btnAiTranslationStatus: document.getElementById('btn-ai-translation-status'),
+    aiTranslationStatusText: document.getElementById('ai-translation-status-text'),
     btnShortcutsHelp: document.getElementById('btn-shortcuts-help'),
     
     // Search
@@ -389,6 +391,12 @@ function cacheElements() {
     btnBuilderNew: document.getElementById('btn-builder-new'),
     btnBuilderClear: document.getElementById('btn-builder-clear'),
     builderCultureSelect: document.getElementById('builder-culture-select'),
+    builderSourceLanguage: document.getElementById('builder-source-language'),
+    builderTargetLanguages: document.getElementById('builder-target-languages'),
+    btnBuilderAutoTranslate: document.getElementById('btn-builder-auto-translate'),
+    builderTranslateProgress: document.getElementById('builder-translate-progress'),
+    builderTranslateFill: document.getElementById('builder-translate-fill'),
+    builderTranslateLabel: document.getElementById('builder-translate-label'),
     builderWorkspace: document.getElementById('builder-workspace'),
     builderEmptyState: document.getElementById('builder-empty-state'),
     builderItemsContainer: document.getElementById('builder-items-list'),
@@ -454,6 +462,7 @@ function setupEventListeners() {
   
   // Header
   elements.btnRescan?.addEventListener('click', handleRescan);
+  elements.btnAiTranslationStatus?.addEventListener('click', openBuilderModal);
   elements.btnShortcutsHelp?.addEventListener('click', openShortcutsModal);
   elements.labelCountBadge?.addEventListener('click', openStatsDashboardModal);
   
@@ -604,6 +613,7 @@ function setupEventListeners() {
   elements.btnBuilderNew?.addEventListener('click', openNewLabelModal);
   elements.btnBuilderClear?.addEventListener('click', handleBuilderClear);
   elements.btnBuilderDownload?.addEventListener('click', handleBuilderDownload);
+  elements.btnBuilderAutoTranslate?.addEventListener('click', handleBuilderAutoTranslate);
   
   // SPEC-32: New Label Modal
   elements.btnCloseNewLabelModal?.addEventListener('click', closeNewLabelModal);
@@ -3763,7 +3773,13 @@ const builderState = {
   labels: [], // Array of { id (db), labelId, culture, text, helpText, prefix, source }
   pendingConflict: null, // { existingLabel, newLabel }
   conflictResolveCallback: null, // Function to call after conflict resolution
-  selectedLabelId: null
+  selectedLabelId: null,
+  translatorWorker: null,
+  translatorReady: false,
+  translating: false,
+  translateProgress: 0,
+  pendingInit: null,
+  pendingTranslate: null
 };
 
 function applyBuilderDirectSaveVisualState() {
@@ -3777,6 +3793,16 @@ function applyBuilderDirectSaveVisualState() {
 function openBuilderModal() {
   closeToolsModal();
   applyBuilderDirectSaveVisualState();
+  if (elements.builderSourceLanguage) {
+    elements.builderSourceLanguage.value = state.ai.sourceLanguage || 'auto';
+  }
+  if (elements.builderTargetLanguages) {
+    const targets = new Set([state.ai.targetLanguage || 'en-US']);
+    [...elements.builderTargetLanguages.options].forEach((opt) => {
+      opt.selected = targets.has(opt.value);
+    });
+  }
+  updateBuilderTranslateProgress(0, t('ai_translation_idle'));
   loadBuilderWorkspace();
   elements.builderModal?.classList.remove('hidden');
 }
@@ -3823,6 +3849,7 @@ function renderBuilderItems() {
           <span class="builder-label-id">${escapeHtml(label.labelId)}</span>
           ${label.prefix ? `<span class="builder-prefix">${escapeHtml(label.prefix)}</span>` : ''}
           ${label.culture ? `<span class="builder-culture">${escapeHtml(label.culture)}</span>` : ''}
+          ${label.isAiTranslated ? `<span class="builder-ai-badge" title="${escapeHtml(t('ai_generated_badge'))}">✨ AI</span>` : ''}
         </div>
         <div class="builder-item-text">${escapeHtml(label.text)}</div>
         ${label.helpText ? `<div class="builder-item-help">${escapeHtml(label.helpText)}</div>` : ''}
@@ -4248,6 +4275,283 @@ function handleBuilderDownload() {
   URL.revokeObjectURL(url);
   
   showSuccess(t('builder_download_complete') || `Downloaded ${sortedLabels.length} labels as ${filename}`);
+}
+
+function getBuilderTargetLanguages() {
+  if (!elements.builderTargetLanguages) return [];
+  return [...elements.builderTargetLanguages.options]
+    .filter((option) => option.selected)
+    .map((option) => option.value);
+}
+
+function setAiTranslationHeaderStatus(visible, message = '') {
+  elements.btnAiTranslationStatus?.classList.toggle('hidden', !visible);
+  if (elements.aiTranslationStatusText) {
+    elements.aiTranslationStatusText.textContent = message || t('ai_translation_idle');
+  }
+}
+
+function updateBuilderTranslateProgress(progress = 0, message = '') {
+  const normalized = Math.max(0, Math.min(100, Math.round(progress)));
+  builderState.translateProgress = normalized;
+
+  if (elements.builderTranslateFill) {
+    elements.builderTranslateFill.style.width = `${normalized}%`;
+  }
+  if (elements.builderTranslateLabel) {
+    elements.builderTranslateLabel.textContent = message || `${normalized}%`;
+  }
+  elements.builderTranslateProgress?.classList.toggle('hidden', !builderState.translating && normalized === 0);
+
+  if (builderState.translating) {
+    setAiTranslationHeaderStatus(true, `${t('ai_translation_running')} ${normalized}%`);
+  } else if (normalized === 100) {
+    setAiTranslationHeaderStatus(false, t('ai_translation_idle'));
+  }
+}
+
+function toWorkerLang(culture) {
+  const value = (culture || '').toLowerCase();
+  if (!value) return 'en';
+  if (value.startsWith('pt')) return 'pt';
+  if (value.startsWith('es')) return 'es';
+  if (value.startsWith('fr')) return 'fr';
+  if (value.startsWith('de')) return 'de';
+  return 'en';
+}
+
+function ensureTranslatorWorker() {
+  if (builderState.translatorWorker) return builderState.translatorWorker;
+
+  builderState.translatorWorker = new Worker('./workers/translator.worker.js', { type: 'module' });
+  builderState.translatorWorker.onmessage = (event) => {
+    const { type, payload } = event.data || {};
+
+    if (type === 'INIT_PROGRESS') {
+      builderState.translating = true;
+      updateBuilderTranslateProgress(payload?.progress || 0, payload?.message || t('ai_status_downloading'));
+      return;
+    }
+
+    if (type === 'READY') {
+      builderState.translatorReady = true;
+      if (builderState.pendingInit) {
+        builderState.pendingInit.resolve(payload);
+        builderState.pendingInit = null;
+      }
+      return;
+    }
+
+    if (type === 'TRANSLATE_PROGRESS') {
+      const progress = payload?.progress || 0;
+      const message = t('ai_translation_progress', {
+        current: payload?.completed || 0,
+        total: payload?.total || 0
+      });
+      updateBuilderTranslateProgress(progress, message);
+      return;
+    }
+
+    if (type === 'TRANSLATE_COMPLETE') {
+      if (builderState.pendingTranslate) {
+        builderState.pendingTranslate.resolve(payload);
+        builderState.pendingTranslate = null;
+      }
+      return;
+    }
+
+    if (type === 'ERROR') {
+      const error = new Error(payload?.message || 'Translator worker error');
+      if (builderState.pendingInit) {
+        builderState.pendingInit.reject(error);
+        builderState.pendingInit = null;
+      }
+      if (builderState.pendingTranslate) {
+        builderState.pendingTranslate.reject(error);
+        builderState.pendingTranslate = null;
+      }
+      builderState.translating = false;
+      updateBuilderTranslateProgress(0, '');
+      showError(error.message);
+    }
+  };
+
+  builderState.translatorWorker.onerror = (event) => {
+    console.error('Translator worker error:', event);
+    builderState.translating = false;
+    if (builderState.pendingInit) {
+      builderState.pendingInit.reject(new Error('Translator worker failed'));
+      builderState.pendingInit = null;
+    }
+    if (builderState.pendingTranslate) {
+      builderState.pendingTranslate.reject(new Error('Translator worker failed'));
+      builderState.pendingTranslate = null;
+    }
+    updateBuilderTranslateProgress(0, '');
+    showError(t('ai_translation_error'));
+  };
+
+  return builderState.translatorWorker;
+}
+
+function initializeTranslatorWorker() {
+  if (builderState.translatorReady) {
+    return Promise.resolve();
+  }
+  if (builderState.pendingInit) {
+    return builderState.pendingInit.promise;
+  }
+
+  const worker = ensureTranslatorWorker();
+  let resolveInit;
+  let rejectInit;
+  const promise = new Promise((resolve, reject) => {
+    resolveInit = resolve;
+    rejectInit = reject;
+  });
+  builderState.pendingInit = { promise, resolve: resolveInit, reject: rejectInit };
+  worker.postMessage({ type: 'INIT' });
+  return promise;
+}
+
+function requestTranslations(jobs) {
+  if (builderState.pendingTranslate) {
+    return Promise.reject(new Error('Translation already in progress'));
+  }
+
+  const worker = ensureTranslatorWorker();
+  let resolveTranslate;
+  let rejectTranslate;
+  const promise = new Promise((resolve, reject) => {
+    resolveTranslate = resolve;
+    rejectTranslate = reject;
+  });
+  builderState.pendingTranslate = { promise, resolve: resolveTranslate, reject: rejectTranslate };
+  worker.postMessage({ type: 'TRANSLATE', payload: { jobs } });
+  return promise;
+}
+
+async function applyTranslatedLabel(baseLabel, targetCulture, translatedText) {
+  const existing = builderState.labels.find(
+    (label) => label.labelId === baseLabel.labelId && label.culture === targetCulture
+  );
+
+  if (existing) {
+    await db.updateBuilderLabel(existing.id, {
+      text: translatedText,
+      helpText: existing.helpText || baseLabel.helpText || '',
+      isAiTranslated: true,
+      translatedFrom: baseLabel.culture
+    });
+    Object.assign(existing, {
+      text: translatedText,
+      isAiTranslated: true,
+      translatedFrom: baseLabel.culture
+    });
+    return;
+  }
+
+  const entry = {
+    labelId: baseLabel.labelId,
+    culture: targetCulture,
+    text: translatedText,
+    helpText: baseLabel.helpText || '',
+    prefix: baseLabel.prefix || '',
+    source: `AI Translation (${baseLabel.culture} -> ${targetCulture})`,
+    isAiTranslated: true,
+    translatedFrom: baseLabel.culture
+  };
+  const id = await db.addBuilderLabel(entry);
+  entry.id = id;
+  builderState.labels.push(entry);
+}
+
+async function handleBuilderAutoTranslate() {
+  if (!isAiReadyAndEnabled()) {
+    showInfo(t('ai_translation_requires_ready'));
+    return;
+  }
+  if (builderState.labels.length === 0) {
+    showInfo(t('builder_empty'));
+    return;
+  }
+  if (builderState.translating) return;
+
+  const sourceLanguage = elements.builderSourceLanguage?.value || 'auto';
+  const targetCultures = getBuilderTargetLanguages();
+  if (targetCultures.length === 0) {
+    showInfo(t('ai_translation_select_target'));
+    return;
+  }
+
+  state.ai.sourceLanguage = sourceLanguage;
+  state.ai.targetLanguage = targetCultures[0] || state.ai.targetLanguage;
+  saveAiSettingsToDb();
+
+  const sourceLabels = sourceLanguage === 'auto'
+    ? [...builderState.labels]
+    : builderState.labels.filter((label) => label.culture === sourceLanguage);
+
+  if (sourceLabels.length === 0) {
+    showInfo(t('ai_translation_no_source_labels'));
+    return;
+  }
+
+  const jobs = [];
+  sourceLabels.forEach((label) => {
+    targetCultures.forEach((targetCulture) => {
+      if (targetCulture !== label.culture) {
+        jobs.push({
+          key: `${label.id || 'new'}::${targetCulture}`,
+          text: label.text,
+          sourceLanguage: toWorkerLang(label.culture),
+          targetLanguage: toWorkerLang(targetCulture),
+          targetCulture,
+          labelId: label.labelId,
+          sourceCulture: label.culture
+        });
+      }
+    });
+  });
+
+  if (jobs.length === 0) {
+    showInfo(t('ai_translation_nothing_to_do'));
+    return;
+  }
+
+  builderState.translating = true;
+  updateBuilderTranslateProgress(0, t('ai_translation_initializing'));
+
+  try {
+    await initializeTranslatorWorker();
+    const result = await requestTranslations(jobs);
+    const translatedItems = result?.translations || [];
+
+    const labelByKey = new Map(
+      sourceLabels.map((label) => [`${label.labelId}::${label.culture}`, label])
+    );
+
+    for (const item of translatedItems) {
+      const base = labelByKey.get(`${item.labelId}::${item.sourceCulture}`);
+      if (!base) continue;
+      await applyTranslatedLabel(base, item.targetCulture, item.translatedText);
+    }
+
+    renderBuilderItems();
+    updateBuilderFooter();
+    updateBuilderTranslateProgress(100, t('ai_translation_complete'));
+    showSuccess(t('ai_translation_done_toast', { count: translatedItems.length }));
+  } catch (err) {
+    console.error('AI translation failed:', err);
+    showError(err.message || t('ai_translation_error'));
+    updateBuilderTranslateProgress(0, '');
+  } finally {
+    builderState.translating = false;
+    setTimeout(() => {
+      updateBuilderTranslateProgress(0, t('ai_translation_idle'));
+      setAiTranslationHeaderStatus(false, t('ai_translation_idle'));
+    }, 800);
+  }
 }
 
 // ============================================

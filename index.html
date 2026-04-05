@@ -127,6 +127,10 @@
           <span class="btn-icon">📁</span>
           <span class="btn-text" data-i18n="btn_change_folder">Change Folder</span>
         </button>
+        <button id="btn-ai-translation-status" class="btn btn-outline btn-sm hidden" title="AI translation progress">
+          <span class="btn-icon">✨</span>
+          <span id="ai-translation-status-text" class="btn-text" data-i18n="ai_translation_idle">AI Translation</span>
+        </button>
         <button id="btn-shortcuts-help" class="btn btn-outline btn-sm" title="Keyboard shortcuts">
           <span class="btn-icon">⌨️</span>
         </button>
@@ -773,9 +777,9 @@
         ⚠️ <span data-i18n="builder_direct_save_warning">Direct Save mode active. Changes will be applied to original files.</span>
       </div>
       
-      <div class="modal-body">
-        <!-- Toolbar -->
-        <div class="builder-toolbar">
+        <div class="modal-body">
+          <!-- Toolbar -->
+          <div class="builder-toolbar">
           <button id="btn-builder-new" class="btn btn-outline btn-sm">
             ➕ <span data-i18n="btn_new_label">New Label</span>
           </button>
@@ -783,11 +787,43 @@
             🗑️ <span data-i18n="btn_clear_all">Clear All</span>
           </button>
           <div class="builder-toolbar-spacer"></div>
-          <select id="builder-culture-select" class="builder-culture-select">
-            <option value="en-US">en-US</option>
-            <option value="pt-BR">pt-BR</option>
-          </select>
-        </div>
+            <select id="builder-culture-select" class="builder-culture-select">
+              <option value="en-US">en-US</option>
+              <option value="pt-BR">pt-BR</option>
+            </select>
+          </div>
+
+          <div class="builder-translate-controls">
+            <label class="display-option-label" for="builder-source-language" data-i18n="ai_translation_source">Source</label>
+            <select id="builder-source-language" class="builder-culture-select">
+              <option value="auto" data-i18n="ai_lang_auto">Auto detect</option>
+              <option value="en-US">en-US</option>
+              <option value="pt-BR">pt-BR</option>
+              <option value="es-ES">es-ES</option>
+              <option value="fr-FR">fr-FR</option>
+              <option value="de-DE">de-DE</option>
+            </select>
+
+            <label class="display-option-label" for="builder-target-languages" data-i18n="ai_translation_targets">Targets</label>
+            <select id="builder-target-languages" class="builder-target-select" multiple>
+              <option value="en-US">en-US</option>
+              <option value="pt-BR">pt-BR</option>
+              <option value="es-ES">es-ES</option>
+              <option value="fr-FR">fr-FR</option>
+              <option value="de-DE">de-DE</option>
+            </select>
+
+            <button id="btn-builder-auto-translate" class="btn btn-outline btn-sm">
+              ✨ <span data-i18n="ai_auto_translate_btn">Auto-Translate</span>
+            </button>
+          </div>
+
+          <div id="builder-translate-progress" class="builder-translate-progress hidden">
+            <div class="progress-bar">
+              <div id="builder-translate-fill" class="progress-fill"></div>
+            </div>
+            <span id="builder-translate-label" class="ai-progress-label">0%</span>
+          </div>
         
         <!-- Workspace List -->
         <div id="builder-workspace" class="builder-workspace">
