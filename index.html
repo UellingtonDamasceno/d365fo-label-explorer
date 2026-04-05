@@ -940,6 +940,52 @@
     </div>
   </div>
 
+  <!-- Hardcoded String Extractor Modal (SPEC-34) -->
+  <div id="extractor-modal" class="modal-overlay hidden">
+    <div class="modal-content extractor-modal-content">
+      <div class="modal-header">
+        <h3>📤 <span data-i18n="extractor_title">Hardcoded String Extractor</span></h3>
+        <button id="btn-close-extractor-modal" class="btn-close">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="hint" data-i18n="extractor_hint">Select .xml/.xpp files (or .rnrproj plus related files) to extract hardcoded string candidates.</p>
+
+        <div class="extractor-actions">
+          <button id="btn-extractor-select-files" class="btn btn-outline btn-sm">
+            📁 <span data-i18n="btn_select_files">Select Files</span>
+          </button>
+          <button id="btn-extractor-start" class="btn btn-primary btn-sm">
+            🔎 <span data-i18n="extractor_start_scan">Scan Candidates</span>
+          </button>
+          <button id="btn-extractor-save-session" class="btn btn-outline btn-sm">
+            💾 <span data-i18n="extractor_save_session">Save Session</span>
+          </button>
+          <button id="btn-extractor-resume-session" class="btn btn-outline btn-sm">
+            ♻️ <span data-i18n="extractor_resume_session">Resume Last Session</span>
+          </button>
+        </div>
+
+        <div id="extractor-progress" class="builder-translate-progress hidden">
+          <div class="progress-bar">
+            <div id="extractor-progress-fill" class="progress-fill"></div>
+          </div>
+          <span id="extractor-progress-label" class="ai-progress-label">0%</span>
+        </div>
+
+        <div id="extractor-summary" class="extractor-summary hidden"></div>
+
+        <div id="extractor-results" class="extractor-results hidden">
+          <!-- candidates rendered dynamically -->
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-extractor-add-all" class="btn btn-success hidden">
+          ➕ <span data-i18n="extractor_add_all">Add All to Builder</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Scripts -->
   <script src="libs/flexsearch.bundle.min.js"></script>
   <script type="module" src="app.js"></script>

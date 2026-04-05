@@ -425,7 +425,21 @@ function cacheElements() {
     btnConflictRename: document.getElementById('btn-conflict-rename'),
     btnConflictEdit: document.getElementById('btn-conflict-edit'),
     btnConflictOverwrite: document.getElementById('btn-conflict-overwrite'),
-    btnConflictSkip: document.getElementById('btn-conflict-skip')
+    btnConflictSkip: document.getElementById('btn-conflict-skip'),
+
+    // SPEC-34: Hardcoded String Extractor
+    extractorModal: document.getElementById('extractor-modal'),
+    btnCloseExtractorModal: document.getElementById('btn-close-extractor-modal'),
+    btnExtractorSelectFiles: document.getElementById('btn-extractor-select-files'),
+    btnExtractorStart: document.getElementById('btn-extractor-start'),
+    btnExtractorSaveSession: document.getElementById('btn-extractor-save-session'),
+    btnExtractorResumeSession: document.getElementById('btn-extractor-resume-session'),
+    extractorProgress: document.getElementById('extractor-progress'),
+    extractorProgressFill: document.getElementById('extractor-progress-fill'),
+    extractorProgressLabel: document.getElementById('extractor-progress-label'),
+    extractorSummary: document.getElementById('extractor-summary'),
+    extractorResults: document.getElementById('extractor-results'),
+    btnExtractorAddAll: document.getElementById('btn-extractor-add-all')
   };
 }
 
@@ -589,6 +603,7 @@ function setupEventListeners() {
     if (e.target === elements.toolsModal) closeToolsModal();
   });
   elements.btnToolMerger?.addEventListener('click', openMergerModal);
+  elements.btnToolExtractor?.addEventListener('click', openExtractorModal);
 
   // SPEC-36: Merger Modal
   elements.btnCloseMergerModal?.addEventListener('click', closeMergerModal);
@@ -632,6 +647,17 @@ function setupEventListeners() {
   elements.conflictModal?.addEventListener('click', (e) => {
     if (e.target === elements.conflictModal) closeConflictModal();
   });
+
+  // SPEC-34: Extractor Modal
+  elements.btnCloseExtractorModal?.addEventListener('click', closeExtractorModal);
+  elements.extractorModal?.addEventListener('click', (e) => {
+    if (e.target === elements.extractorModal) closeExtractorModal();
+  });
+  elements.btnExtractorSelectFiles?.addEventListener('click', handleExtractorSelectFiles);
+  elements.btnExtractorStart?.addEventListener('click', handleExtractorStartScan);
+  elements.btnExtractorAddAll?.addEventListener('click', handleExtractorAddAllToBuilder);
+  elements.btnExtractorSaveSession?.addEventListener('click', handleExtractorSaveSession);
+  elements.btnExtractorResumeSession?.addEventListener('click', handleExtractorResumeLastSession);
   
   // Keyboard shortcuts
   document.addEventListener('keydown', handleKeyboardShortcuts);
@@ -664,7 +690,8 @@ function handleKeyboardShortcuts(e) {
                        !elements.mergerModal?.classList.contains('hidden') ||
                        !elements.builderModal?.classList.contains('hidden') ||
                        !elements.newLabelModal?.classList.contains('hidden') ||
-                       !elements.conflictModal?.classList.contains('hidden');
+                       !elements.conflictModal?.classList.contains('hidden') ||
+                       !elements.extractorModal?.classList.contains('hidden');
 
   // Delete selected item inside Builder
   if (builderModalOpen && !builderSubModalOpen && !isInputFocused && e.key === 'Delete') {
@@ -771,6 +798,8 @@ function handleKeyboardShortcuts(e) {
       closeNewLabelModal();
     } else if (!elements.builderModal?.classList.contains('hidden')) {
       closeBuilderModal();
+    } else if (!elements.extractorModal?.classList.contains('hidden')) {
+      closeExtractorModal();
     }
     return;
   }
@@ -4551,6 +4580,330 @@ async function handleBuilderAutoTranslate() {
       updateBuilderTranslateProgress(0, t('ai_translation_idle'));
       setAiTranslationHeaderStatus(false, t('ai_translation_idle'));
     }, 800);
+  }
+}
+
+// ============================================
+// SPEC-34: Hardcoded String Extractor
+// ============================================
+
+const extractorState = {
+  files: [],
+  candidates: [],
+  worker: null,
+  running: false,
+  sessionId: null
+};
+
+function createExtractorSessionId() {
+  return `extractor_${Date.now()}`;
+}
+
+function openExtractorModal() {
+  closeToolsModal();
+  if (!extractorState.sessionId) {
+    extractorState.sessionId = createExtractorSessionId();
+  }
+  elements.extractorModal?.classList.remove('hidden');
+  renderExtractorSummary();
+}
+
+function closeExtractorModal() {
+  elements.extractorModal?.classList.add('hidden');
+}
+
+function renderExtractorSummary() {
+  if (!elements.extractorSummary) return;
+
+  const files = extractorState.files.length;
+  const candidates = extractorState.candidates.filter((item) => item.status === 'pending').length;
+  const confirmed = extractorState.candidates.filter((item) => item.status === 'confirmed').length;
+  const ignored = extractorState.candidates.filter((item) => item.status === 'ignored').length;
+
+  if (files === 0 && extractorState.candidates.length === 0) {
+    elements.extractorSummary.classList.add('hidden');
+    return;
+  }
+
+  elements.extractorSummary.classList.remove('hidden');
+  elements.extractorSummary.textContent = t('extractor_summary', {
+    files,
+    candidates,
+    confirmed,
+    ignored
+  });
+}
+
+function updateExtractorProgress(progress = 0, label = '') {
+  if (elements.extractorProgressFill) {
+    elements.extractorProgressFill.style.width = `${Math.max(0, Math.min(100, progress))}%`;
+  }
+  if (elements.extractorProgressLabel) {
+    elements.extractorProgressLabel.textContent = label || `${Math.round(progress)}%`;
+  }
+  elements.extractorProgress?.classList.toggle('hidden', !extractorState.running && progress === 0);
+}
+
+async function handleExtractorSelectFiles() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.multiple = true;
+  input.accept = '.xml,.xpp,.rnrproj,.txt';
+
+  input.onchange = async () => {
+    const files = [...(input.files || [])];
+    if (files.length === 0) return;
+
+    const loaded = [];
+    for (const file of files) {
+      const content = await file.text();
+      loaded.push({
+        name: file.name,
+        content
+      });
+    }
+
+    extractorState.files = loaded;
+    extractorState.candidates = [];
+    extractorState.sessionId = createExtractorSessionId();
+    elements.extractorResults?.classList.add('hidden');
+    elements.btnExtractorAddAll?.classList.add('hidden');
+    renderExtractorSummary();
+    showSuccess(t('extractor_files_loaded', { count: loaded.length }));
+  };
+
+  input.click();
+}
+
+function buildSuggestedIds(candidates) {
+  const existing = new Set(builderState.labels.map((item) => `${item.labelId}::${item.culture}`));
+  const usedIds = new Set();
+  const prefix = builderState.labels.find((item) => item.prefix)?.prefix || 'LBL';
+  let sequence = 1;
+
+  return candidates.map((item) => {
+    let suggestion = '';
+    if (isAiReadyAndEnabled() && state.ai.semanticIdSuggestion) {
+      suggestion = item.text
+        .replace(/[^A-Za-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 4)
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+        .join('');
+    }
+
+    if (!suggestion || suggestion.length < 3) {
+      suggestion = `${prefix}_${String(sequence).padStart(3, '0')}`;
+      sequence++;
+    }
+
+    const culture = elements.builderCultureSelect?.value || 'en-US';
+    while (usedIds.has(suggestion) || existing.has(`${suggestion}::${culture}`)) {
+      suggestion = `${suggestion}1`;
+    }
+    usedIds.add(suggestion);
+
+    return {
+      ...item,
+      suggestedId: suggestion,
+      status: 'pending'
+    };
+  });
+}
+
+function renderExtractorResults() {
+  if (!elements.extractorResults) return;
+
+  const rows = extractorState.candidates;
+  if (rows.length === 0) {
+    elements.extractorResults.classList.add('hidden');
+    elements.btnExtractorAddAll?.classList.add('hidden');
+    return;
+  }
+
+  elements.extractorResults.classList.remove('hidden');
+  elements.btnExtractorAddAll?.classList.toggle('hidden', !rows.some((item) => item.status === 'pending'));
+
+  elements.extractorResults.innerHTML = rows.map((item, index) => `
+    <div class="extractor-row extractor-${item.status}">
+      <div class="extractor-main">
+        <div class="extractor-text">${escapeHtml(item.text)}</div>
+        <div class="extractor-context">${escapeHtml((item.contexts || []).map((ctx) => `${ctx.file}:${ctx.line}`).join(', '))}</div>
+      </div>
+      <input class="extractor-id-input" data-index="${index}" value="${escapeAttr(item.suggestedId || '')}" ${item.status !== 'pending' ? 'disabled' : ''}>
+      <div class="extractor-row-actions">
+        <button class="btn btn-outline btn-sm extractor-confirm" data-index="${index}" ${item.status !== 'pending' ? 'disabled' : ''}>${t('extractor_confirm_new')}</button>
+        <button class="btn btn-outline btn-sm extractor-ignore" data-index="${index}" ${item.status !== 'pending' ? 'disabled' : ''}>${t('extractor_ignore')}</button>
+      </div>
+    </div>
+  `).join('');
+
+  elements.extractorResults.querySelectorAll('.extractor-id-input').forEach((input) => {
+    input.addEventListener('input', (event) => {
+      const idx = parseInt(event.currentTarget.dataset.index, 10);
+      if (Number.isFinite(idx) && extractorState.candidates[idx]) {
+        extractorState.candidates[idx].suggestedId = event.currentTarget.value.trim();
+      }
+    });
+  });
+
+  elements.extractorResults.querySelectorAll('.extractor-confirm').forEach((button) => {
+    button.addEventListener('click', () => {
+      const idx = parseInt(button.dataset.index, 10);
+      confirmExtractorCandidate(idx);
+    });
+  });
+
+  elements.extractorResults.querySelectorAll('.extractor-ignore').forEach((button) => {
+    button.addEventListener('click', () => {
+      const idx = parseInt(button.dataset.index, 10);
+      ignoreExtractorCandidate(idx);
+    });
+  });
+
+  renderExtractorSummary();
+}
+
+async function confirmExtractorCandidate(index) {
+  const candidate = extractorState.candidates[index];
+  if (!candidate || candidate.status !== 'pending') return;
+
+  const labelId = (candidate.suggestedId || '').trim();
+  if (!labelId) {
+    showError(t('builder_id_required'));
+    return;
+  }
+
+  await addLabelToBuilder({
+    labelId,
+    text: candidate.text,
+    helpText: '',
+    culture: elements.builderCultureSelect?.value || 'en-US',
+    prefix: builderState.labels.find((item) => item.prefix)?.prefix || 'LBL',
+    model: 'Extractor',
+    fileName: candidate.contexts?.[0]?.file || 'scan'
+  });
+
+  candidate.status = 'confirmed';
+  renderExtractorResults();
+}
+
+function ignoreExtractorCandidate(index) {
+  const candidate = extractorState.candidates[index];
+  if (!candidate || candidate.status !== 'pending') return;
+  candidate.status = 'ignored';
+  renderExtractorResults();
+}
+
+async function handleExtractorAddAllToBuilder() {
+  const pending = extractorState.candidates
+    .map((item, index) => ({ item, index }))
+    .filter((entry) => entry.item.status === 'pending');
+
+  for (const entry of pending) {
+    await confirmExtractorCandidate(entry.index);
+  }
+}
+
+function ensureExtractorWorker() {
+  if (extractorState.worker) return extractorState.worker;
+
+  extractorState.worker = new Worker('./workers/extractor.worker.js');
+  extractorState.worker.onmessage = (event) => {
+    const { type, payload } = event.data || {};
+
+    if (type === 'PROGRESS') {
+      extractorState.running = true;
+      updateExtractorProgress(payload?.progress || 0, `${payload?.processed || 0}/${payload?.total || 0}`);
+      return;
+    }
+
+    if (type === 'COMPLETE') {
+      extractorState.running = false;
+      updateExtractorProgress(100, t('extractor_scan_complete'));
+      extractorState.candidates = buildSuggestedIds(payload?.candidates || []);
+      renderExtractorResults();
+      showSuccess(t('extractor_found_candidates', { count: extractorState.candidates.length }));
+      setTimeout(() => updateExtractorProgress(0, ''), 600);
+      return;
+    }
+
+    if (type === 'ERROR') {
+      extractorState.running = false;
+      updateExtractorProgress(0, '');
+      showError(payload?.message || t('extractor_scan_error'));
+    }
+  };
+
+  extractorState.worker.onerror = (event) => {
+    console.error('Extractor worker error:', event);
+    extractorState.running = false;
+    updateExtractorProgress(0, '');
+    showError(t('extractor_scan_error'));
+  };
+
+  return extractorState.worker;
+}
+
+async function handleExtractorStartScan() {
+  const scanFiles = extractorState.files.filter((file) => {
+    const lower = file.name.toLowerCase();
+    return lower.endsWith('.xml') || lower.endsWith('.xpp');
+  });
+
+  if (scanFiles.length === 0) {
+    showError(t('extractor_select_files_error'));
+    return;
+  }
+
+  const worker = ensureExtractorWorker();
+  extractorState.running = true;
+  updateExtractorProgress(0, '0%');
+  worker.postMessage({
+    type: 'EXTRACT',
+    payload: { files: scanFiles }
+  });
+}
+
+async function handleExtractorSaveSession() {
+  if (!extractorState.sessionId) {
+    extractorState.sessionId = createExtractorSessionId();
+  }
+
+  try {
+    await db.saveExtractionSession({
+      sessionId: extractorState.sessionId,
+      model: 'generic',
+      pendingStrings: extractorState.candidates,
+      ignoredStrings: extractorState.candidates.filter((item) => item.status === 'ignored'),
+      completedLabels: extractorState.candidates.filter((item) => item.status === 'confirmed'),
+      files: extractorState.files.map((file) => ({ name: file.name })),
+      lastFileProcessed: extractorState.files[0]?.name || ''
+    });
+    showSuccess(t('extractor_session_saved'));
+  } catch (err) {
+    console.error('Failed to save extraction session:', err);
+    showError(t('extractor_session_save_error'));
+  }
+}
+
+async function handleExtractorResumeLastSession() {
+  try {
+    const sessions = await db.getExtractionSessions();
+    const session = sessions[0];
+    if (!session) {
+      showInfo(t('extractor_no_session'));
+      return;
+    }
+
+    extractorState.sessionId = session.sessionId;
+    extractorState.candidates = session.pendingStrings || [];
+    renderExtractorResults();
+    showSuccess(t('extractor_session_resumed'));
+  } catch (err) {
+    console.error('Failed to load extraction session:', err);
+    showError(t('extractor_session_load_error'));
   }
 }
 

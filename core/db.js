@@ -7,14 +7,15 @@
  */
 
 const DB_NAME = 'd365fo-labels';
-const DB_VERSION = 4; // SPEC-32: Added builder workspace store
+const DB_VERSION = 5; // SPEC-34: Added extraction sessions store
 
 const STORES = {
   LABELS: 'labels',
   METADATA: 'metadata',
   HANDLES: 'handles',
   CATALOG: 'catalog',  // SPEC-23: Virtual catalog
-  BUILDER: 'builder_workspace'  // SPEC-32: Builder workspace
+  BUILDER: 'builder_workspace',  // SPEC-32: Builder workspace
+  EXTRACTION: 'extraction_sessions' // SPEC-34: Extractor pause/resume sessions
 };
 
 let db = null;
@@ -57,15 +58,27 @@ export async function initDB() {
       const database = event.target.result;
       console.log(`🚀 Upgrading database from ${event.oldVersion} to ${event.newVersion}`);
 
-      // Labels store
-      if (database.objectStoreNames.contains(STORES.LABELS)) {
-        database.deleteObjectStore(STORES.LABELS);
+      const upgradeTx = event.target.transaction;
+
+      // Labels store (preserve existing data on upgrades)
+      let labelsStore;
+      if (!database.objectStoreNames.contains(STORES.LABELS)) {
+        labelsStore = database.createObjectStore(STORES.LABELS, { keyPath: 'id' });
+      } else {
+        labelsStore = upgradeTx.objectStore(STORES.LABELS);
       }
-      const labelsStore = database.createObjectStore(STORES.LABELS, { keyPath: 'id' });
-      labelsStore.createIndex('fullId', 'fullId', { unique: false });
-      labelsStore.createIndex('culture', 'culture', { unique: false });
-      labelsStore.createIndex('model', 'model', { unique: false });
-      labelsStore.createIndex('prefix', 'prefix', { unique: false });
+      if (!labelsStore.indexNames.contains('fullId')) {
+        labelsStore.createIndex('fullId', 'fullId', { unique: false });
+      }
+      if (!labelsStore.indexNames.contains('culture')) {
+        labelsStore.createIndex('culture', 'culture', { unique: false });
+      }
+      if (!labelsStore.indexNames.contains('model')) {
+        labelsStore.createIndex('model', 'model', { unique: false });
+      }
+      if (!labelsStore.indexNames.contains('prefix')) {
+        labelsStore.createIndex('prefix', 'prefix', { unique: false });
+      }
 
       // Metadata store
       if (!database.objectStoreNames.contains(STORES.METADATA)) {
@@ -77,20 +90,35 @@ export async function initDB() {
         database.createObjectStore(STORES.HANDLES, { keyPath: 'id' });
       }
 
-      // SPEC-23: Catalog store for virtual catalog
-      if (database.objectStoreNames.contains(STORES.CATALOG)) {
-        database.deleteObjectStore(STORES.CATALOG);
+      // SPEC-23: Catalog store for virtual catalog (preserve existing data)
+      let catalogStore;
+      if (!database.objectStoreNames.contains(STORES.CATALOG)) {
+        catalogStore = database.createObjectStore(STORES.CATALOG, { keyPath: 'id' });
+      } else {
+        catalogStore = upgradeTx.objectStore(STORES.CATALOG);
       }
-      const catalogStore = database.createObjectStore(STORES.CATALOG, { keyPath: 'id' });
-      catalogStore.createIndex('culture', 'culture', { unique: false });
-      catalogStore.createIndex('status', 'status', { unique: false });
-      catalogStore.createIndex('model', 'model', { unique: false });
+      if (!catalogStore.indexNames.contains('culture')) {
+        catalogStore.createIndex('culture', 'culture', { unique: false });
+      }
+      if (!catalogStore.indexNames.contains('status')) {
+        catalogStore.createIndex('status', 'status', { unique: false });
+      }
+      if (!catalogStore.indexNames.contains('model')) {
+        catalogStore.createIndex('model', 'model', { unique: false });
+      }
 
       // SPEC-32: Builder workspace store
       if (!database.objectStoreNames.contains(STORES.BUILDER)) {
         const builderStore = database.createObjectStore(STORES.BUILDER, { keyPath: 'id', autoIncrement: true });
         builderStore.createIndex('labelId', 'labelId', { unique: false });
         builderStore.createIndex('culture', 'culture', { unique: false });
+      }
+
+      // SPEC-34: Extraction sessions store
+      if (!database.objectStoreNames.contains(STORES.EXTRACTION)) {
+        const extractionStore = database.createObjectStore(STORES.EXTRACTION, { keyPath: 'sessionId' });
+        extractionStore.createIndex('updatedAt', 'updatedAt', { unique: false });
+        extractionStore.createIndex('model', 'model', { unique: false });
       }
     };
   });
@@ -712,6 +740,80 @@ export async function findBuilderLabelById(labelId, culture) {
       const match = results.find(r => r.culture === culture);
       resolve(match || null);
     };
+    request.onerror = () => reject(request.error);
+  });
+}
+
+// ============================================
+// SPEC-34: Extraction Sessions Functions
+// ============================================
+
+/**
+ * Save or update extraction session snapshot
+ * @param {Object} session
+ */
+export async function saveExtractionSession(session) {
+  await initDB();
+
+  const entry = {
+    ...session,
+    updatedAt: Date.now()
+  };
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.EXTRACTION, 'readwrite');
+    const store = tx.objectStore(STORES.EXTRACTION);
+    const request = store.put(entry);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * Load extraction session by id
+ * @param {string} sessionId
+ * @returns {Promise<Object|null>}
+ */
+export async function getExtractionSession(sessionId) {
+  await initDB();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.EXTRACTION, 'readonly');
+    const store = tx.objectStore(STORES.EXTRACTION);
+    const request = store.get(sessionId);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * List all extraction sessions
+ * @returns {Promise<Array>}
+ */
+export async function getExtractionSessions() {
+  await initDB();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.EXTRACTION, 'readonly');
+    const store = tx.objectStore(STORES.EXTRACTION);
+    const request = store.getAll();
+    request.onsuccess = () => resolve((request.result || []).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)));
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * Delete extraction session
+ * @param {string} sessionId
+ */
+export async function removeExtractionSession(sessionId) {
+  await initDB();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.EXTRACTION, 'readwrite');
+    const store = tx.objectStore(STORES.EXTRACTION);
+    const request = store.delete(sessionId);
+    request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
   });
 }
