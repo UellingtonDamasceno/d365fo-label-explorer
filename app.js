@@ -61,6 +61,12 @@ const state = {
   keyboardNav: {
     selectedIndex: -1 // Currently selected card index for keyboard navigation
   },
+  // UI Loading states
+  ui: {
+    isPopulatingFilters: false
+  },
+  // Background processes tracking
+  backgroundTasks: [], // Array of { id, type, name, status, progress, message }
   // SPEC-23: Background indexing state
   indexingMode: 'idle', // 'idle', 'priority', 'background'
   backgroundIndexing: {
@@ -237,6 +243,8 @@ function cacheElements() {
     lastIndexed: document.getElementById('last-indexed'),
     btnRescan: document.getElementById('btn-rescan'),
     btnHeaderChangeFolder: document.getElementById('btn-header-change-folder'),
+    btnBackgroundTasks: document.getElementById('btn-background-tasks'),
+    backgroundTasksText: document.getElementById('background-tasks-text'),
     btnAiDownloadStatus: document.getElementById('btn-ai-download-status'),
     aiDownloadStatusText: document.getElementById('ai-download-status-text'),
     btnAiTranslationStatus: document.getElementById('btn-ai-translation-status'),
@@ -405,6 +413,8 @@ function cacheElements() {
     builderEmptyState: document.getElementById('builder-empty-state'),
     builderItemsContainer: document.getElementById('builder-items-list'),
     btnBuilderDownload: document.getElementById('btn-builder-download'),
+    btnBuilderFinish: document.getElementById('btn-builder-finish'),
+    chkBackgroundIndexing: document.getElementById('chk-background-indexing'),
     
     // SPEC-32: New Label Modal
     newLabelModal: document.getElementById('new-label-modal'),
@@ -575,71 +585,18 @@ function setupEventListeners() {
   // Shortcuts Modal
   elements.btnCloseShortcutsModal?.addEventListener('click', closeShortcutsModal);
   elements.btnCloseShortcuts?.addEventListener('click', closeShortcutsModal);
-  
-  // Close modals on overlay click
-  elements.advancedSearchModal?.addEventListener('click', (e) => {
-    if (e.target === elements.advancedSearchModal) {
-      closeAdvancedSearchModal();
-    }
-  });
-
-  elements.systemSettingsModal?.addEventListener('click', (e) => {
-    if (e.target === elements.systemSettingsModal) {
-      closeSystemSettingsModal();
-    }
-  });
-
-  elements.itemSelectorModal?.addEventListener('click', (e) => {
-    if (e.target === elements.itemSelectorModal) {
-      closeItemSelectorModal();
-    }
-  });
-  
-  elements.labelDetailsModal?.addEventListener('click', (e) => {
-    if (e.target === elements.labelDetailsModal) {
-      closeLabelDetailsModal();
-    }
-  });
-
-  elements.shortcutsModal?.addEventListener('click', (e) => {
-    if (e.target === elements.shortcutsModal) {
-      closeShortcutsModal();
-    }
-  });
-
-  elements.backgroundProgressModal?.addEventListener('click', (e) => {
-    if (e.target === elements.backgroundProgressModal) {
-      closeBackgroundProgressModal();
-    }
-  });
-
-  elements.statsDashboardModal?.addEventListener('click', (e) => {
-    if (e.target === elements.statsDashboardModal) {
-      closeStatsDashboardModal();
-    }
-  });
-
-  elements.advancedSelectionModal?.addEventListener('click', (e) => {
-    if (e.target === elements.advancedSelectionModal) {
-      closeAdvancedSelectionModal();
-    }
-  });
 
   // SPEC-36: Tools Menu
   elements.btnToolsMenu?.addEventListener('click', openToolsModal);
   elements.btnCloseToolsModal?.addEventListener('click', closeToolsModal);
   elements.btnCloseTools?.addEventListener('click', closeToolsModal);
-  elements.toolsModal?.addEventListener('click', (e) => {
-    if (e.target === elements.toolsModal) closeToolsModal();
-  });
+  
   elements.btnToolMerger?.addEventListener('click', openMergerModal);
   elements.btnToolExtractor?.addEventListener('click', openExtractorWorkspace);
 
   // SPEC-36: Merger Modal
   elements.btnCloseMergerModal?.addEventListener('click', closeMergerModal);
-  elements.mergerModal?.addEventListener('click', (e) => {
-    if (e.target === elements.mergerModal) closeMergerModal();
-  });
+  
   elements.mergerDropzone?.addEventListener('click', () => elements.btnMergerSelectFiles?.click());
   elements.btnMergerSelectFiles?.addEventListener('click', handleMergerSelectFiles);
   elements.btnMergerAddMore?.addEventListener('click', handleMergerSelectFiles);
@@ -664,9 +621,6 @@ function setupEventListeners() {
   elements.btnCloseNewLabelModal?.addEventListener('click', closeNewLabelModal);
   elements.btnCancelNewLabel?.addEventListener('click', closeNewLabelModal);
   elements.btnSaveNewLabel?.addEventListener('click', handleSaveNewLabel);
-  elements.newLabelModal?.addEventListener('click', (e) => {
-    if (e.target === elements.newLabelModal) closeNewLabelModal();
-  });
   
   // SPEC-32: Conflict Modal
   elements.btnCloseConflictModal?.addEventListener('click', closeConflictModal);
@@ -674,17 +628,11 @@ function setupEventListeners() {
   elements.btnConflictRename?.addEventListener('click', () => resolveConflict('rename'));
   elements.btnConflictEdit?.addEventListener('click', openManualConflictEditor);
   elements.btnConflictOverwrite?.addEventListener('click', () => resolveConflict('overwrite'));
-  elements.conflictModal?.addEventListener('click', (e) => {
-    if (e.target === elements.conflictModal) closeConflictModal();
-  });
 
   // Export Modal
   elements.btnCloseExportModal?.addEventListener('click', closeExportModal);
   elements.btnExportCancel?.addEventListener('click', closeExportModal);
   elements.btnExportGenerate?.addEventListener('click', handleExportGenerate);
-  elements.exportModal?.addEventListener('click', (e) => {
-    if (e.target === elements.exportModal) closeExportModal();
-  });
 
   // SPEC-34: Extractor Workspace
   elements.btnExtractorClose?.addEventListener('click', closeExtractorWorkspace);
@@ -837,10 +785,12 @@ function handleKeyboardShortcuts(e) {
       closeConflictModal();
     } else if (!elements.newLabelModal?.classList.contains('hidden')) {
       closeNewLabelModal();
+    } else if (!elements.exportModal?.classList.contains('hidden')) {
+      closeExportModal();
     } else if (!elements.builderModal?.classList.contains('hidden')) {
       closeBuilderModal();
-    } else if (!elements.extractorModal?.classList.contains('hidden')) {
-      closeExtractorModal();
+    } else if (state.extractorOpen) {
+      closeExtractorWorkspace();
     }
     return;
   }
@@ -2566,6 +2516,9 @@ async function showMainInterface(lastIndexed = null) {
  * Populate filter options for modal
  */
 async function populateFilters() {
+  if (state.ui.isPopulatingFilters) return;
+  state.ui.isPopulatingFilters = true;
+
   try {
     const catalog = await db.getCatalog();
     let cultures = [...new Set(catalog.map(entry => entry.culture).filter(Boolean))].sort();
@@ -2588,6 +2541,8 @@ async function populateFilters() {
     renderModalFilters();
   } catch (err) {
     console.error('Error populating filters:', err);
+  } finally {
+    state.ui.isPopulatingFilters = false;
   }
 }
 /**
@@ -4618,22 +4573,50 @@ async function handleExportGenerate() {
   }
 
   const prefix = elements.exportFilePrefix?.value?.trim() || 'Labels';
+  const sourceCulture = elements.exportSourceCulture?.textContent || 'en-US';
+  
+  // 1. Snapshot the session before clearing workspace
+  const taskId = Date.now();
+  const sessionSnapshot = {
+    id: taskId,
+    timestamp: taskId,
+    model: prefix,
+    labelCount: builderState.labels.length,
+    status: 'processing',
+    labels: cloneBuilderLabels(builderState.labels),
+    targetCultures: selectedLanguages
+  };
 
-  // Disable button during export
-  if (elements.btnExportGenerate) {
-    elements.btnExportGenerate.disabled = true;
-    elements.btnExportGenerate.innerHTML = '⏳ <span>Processing...</span>';
-  }
+  // Save to history immediately
+  await db.saveBuilderSession(sessionSnapshot);
+  
+  // 2. Close modal and clear workspace immediately
+  closeExportModal();
+  await db.clearBuilderWorkspace();
+  builderState.labels = [];
+  builderState.isDirty = false;
+  renderBuilderItems();
+  updateBuilderFooter();
+  
+  showInfo(t('export_started_background') || 'Export started in background. Check the status in the header.');
+
+  // 3. Process in background
+  const task = {
+    id: taskId,
+    type: 'export',
+    name: `${prefix} (${selectedLanguages.length} langs)`,
+    status: 'processing',
+    progress: 5,
+    message: t('export_preparing')
+  };
+  
+  state.backgroundTasks.push(task);
+  updateBackgroundTasksHeader();
 
   try {
-    updateExportProgress(5, t('export_preparing') || 'Preparing labels...');
-
-    // Get source culture
-    const sourceCulture = elements.exportSourceCulture?.textContent || 'en-US';
-    
     // Group existing labels by ID to easily check for translations
     const labelsById = new Map();
-    builderState.labels.forEach(label => {
+    sessionSnapshot.labels.forEach(label => {
       if (!labelsById.has(label.labelId)) {
         labelsById.set(label.labelId, new Map());
       }
@@ -4642,8 +4625,6 @@ async function handleExportGenerate() {
 
     const uniqueIds = Array.from(labelsById.keys());
     const allExportLabels = [];
-
-    // Find languages that need translation (not source and not already present)
     const jobs = [];
     
     uniqueIds.forEach(labelId => {
@@ -4652,15 +4633,9 @@ async function handleExportGenerate() {
       
       selectedLanguages.forEach(targetCulture => {
         const lowerTarget = targetCulture.toLowerCase();
-        
-        // If we already have this translation in the builder, use it
         if (translations.has(lowerTarget)) {
-          allExportLabels.push({
-            ...translations.get(lowerTarget),
-            prefix
-          });
+          allExportLabels.push({ ...translations.get(lowerTarget), prefix });
         } else if (isAiReadyAndEnabled()) {
-          // Need AI translation
           jobs.push({
             key: `${labelId}::${sourceLabel.culture}::${targetCulture}`,
             text: sourceLabel.text,
@@ -4670,107 +4645,116 @@ async function handleExportGenerate() {
             labelId: labelId,
             sourceCulture: sourceLabel.culture
           });
-        } else {
-          // AI not ready and no translation, skip or add empty
-          console.warn(`No translation for ${labelId} in ${targetCulture} and AI not ready.`);
         }
       });
     });
 
-    // Run AI translations if needed
+    // Run translations
     if (jobs.length > 0) {
-      updateExportProgress(10, t('export_translating') || 'Translating labels...');
+      task.progress = 10;
+      task.message = t('export_translating');
+      updateBackgroundTasksHeader();
       
       await initializeTranslatorWorker();
       const result = await requestTranslations(jobs, (prog) => {
-        const pct = Math.round(10 + prog * 60);
-        updateExportProgress(pct, `${t('export_translating') || 'Translating'}... ${Math.round(prog * 100)}%`);
+        task.progress = Math.round(10 + prog * 60);
+        updateBackgroundTasksHeader();
       });
 
       const translatedItems = result?.translations || [];
-      translatedItems.forEach(item => {
+      for (const item of translatedItems) {
         if (item.translatedText && !item.error) {
-          allExportLabels.push({
+          const entry = {
             labelId: item.labelId,
             culture: item.targetCulture,
             text: item.translatedText,
             prefix,
             isAiTranslated: true
-          });
+          };
+          allExportLabels.push(entry);
+          
+          // SPEC-32 Cache: Save translated label back to main database for future search
+          try {
+            await db.addLabels([{
+              id: `${prefix}:${item.labelId}:${item.targetCulture}`,
+              fullId: `@${prefix}:${item.labelId}`,
+              labelId: item.labelId,
+              prefix: prefix,
+              model: 'User Cache',
+              culture: item.targetCulture,
+              text: item.translatedText,
+              help: '',
+              isUserGenerated: true
+            }]);
+          } catch (e) {}
         }
-      });
+      }
     }
 
-    updateExportProgress(80, t('export_generating') || 'Generating files...');
+    task.progress = 80;
+    task.message = t('export_generating');
+    updateBackgroundTasksHeader();
 
-    // Group final labels by culture for output
+    // Group and package
     const groups = new Map();
     allExportLabels.forEach(label => {
-      if (!groups.has(label.culture)) {
-        groups.set(label.culture, []);
-      }
+      if (!groups.has(label.culture)) groups.set(label.culture, []);
       groups.get(label.culture).push(label);
     });
 
-    // Sort each group
-    groups.forEach(labels => {
-      labels.sort((a, b) => a.labelId.localeCompare(b.labelId));
-    });
+    groups.forEach(labels => labels.sort((a, b) => a.labelId.localeCompare(b.labelId)));
 
-    updateExportProgress(90, t('export_packaging') || 'Packaging files...');
-
-    // If single language, download directly; otherwise ZIP
+    let zipBlob = null;
     if (groups.size === 1) {
       const [culture, labels] = [...groups.entries()][0];
       const content = buildLabelFileContent(labels);
-      const filename = `${prefix}.${culture}.label.txt`;
-      triggerFileDownload(content, filename);
-      updateExportProgress(100, t('export_complete') || 'Export complete!');
-      showSuccess(t('export_success_single', { count: labels.length, culture }) || `Exported ${labels.length} labels (${culture})`);
+      zipBlob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     } else {
-      // Multiple languages - create ZIP
-      if (typeof JSZip === 'undefined') {
-        showError('JSZip library not loaded');
-        if (elements.btnExportGenerate) {
-          elements.btnExportGenerate.disabled = false;
-          elements.btnExportGenerate.innerHTML = '🚀 <span>Generate & Export</span>';
-        }
-        return;
-      }
-
       const zip = new JSZip();
       groups.forEach((labels, culture) => {
-        const content = buildLabelFileContent(labels);
-        const filename = `${prefix}.${culture}.label.txt`;
-        zip.file(filename, content);
+        zip.file(`${prefix}.${culture}.label.txt`, buildLabelFileContent(labels));
       });
-
-      const blob = await zip.generateAsync({ type: 'blob' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${prefix}_Labels_Export.zip`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-
-      updateExportProgress(100, t('export_complete') || 'Export complete!');
-      const totalLabelsCount = [...groups.values()].reduce((sum, arr) => sum + arr.length, 0);
-      showSuccess(t('export_success_zip', { count: totalLabelsCount, files: groups.size }) || `Exported ${totalLabelsCount} labels in ${groups.size} files`);
+      zipBlob = await zip.generateAsync({ type: 'blob' });
     }
 
-    // Mark as not dirty and close modal after a short delay
-    builderState.isDirty = false;
-    setTimeout(closeExportModal, 1500);
+    // Update session in DB with the final results
+    sessionSnapshot.status = 'completed';
+    sessionSnapshot.zipBlob = zipBlob;
+    await db.saveBuilderSession(sessionSnapshot);
+
+    task.progress = 100;
+    task.status = 'completed';
+    task.message = t('export_complete');
+    updateBackgroundTasksHeader();
+    showSuccess(t('export_success_background', { name: prefix }));
 
   } catch (err) {
-    console.error('Builder export failed:', err);
-    showError(err?.message || 'Export failed');
-  } finally {
-    if (elements.btnExportGenerate) {
-      elements.btnExportGenerate.disabled = false;
-      elements.btnExportGenerate.innerHTML = '🚀 <span data-i18n="btn_generate_export">Generate & Export</span>';
+    console.error('Background export failed:', err);
+    task.status = 'error';
+    task.message = err?.message || 'Export failed';
+    updateBackgroundTasksHeader();
+  }
+}
+
+/**
+ * Update background tasks header indicator
+ */
+function updateBackgroundTasksHeader() {
+  if (!elements.btnBackgroundTasks || !elements.backgroundTasksText) return;
+
+  const activeTasks = state.backgroundTasks.filter(t => t.status === 'processing');
+  elements.btnBackgroundTasks.classList.toggle('hidden', state.backgroundTasks.length === 0);
+  
+  if (state.backgroundTasks.length > 0) {
+    const completed = state.backgroundTasks.filter(t => t.status === 'completed').length;
+    const total = state.backgroundTasks.length;
+    elements.backgroundTasksText.textContent = `${activeTasks.length > 0 ? '⚡ ' : ''}${completed}/${total}`;
+    
+    // If we just finished a task, show a little highlight
+    if (activeTasks.length === 0) {
+      elements.btnBackgroundTasks.classList.add('tasks-completed');
+    } else {
+      elements.btnBackgroundTasks.classList.remove('tasks-completed');
     }
   }
 }
@@ -6885,12 +6869,34 @@ function updateAiStatusBadge() {
   elements.aiStatusBadge.textContent = t(key);
 }
 
+/**
+ * Update the AI download progress in the header (sticky indicator)
+ */
+function updateHeaderAiDownloadProgress() {
+  if (!elements.btnAiDownloadStatus || !elements.aiDownloadStatusText) return;
+
+  const isDownloading = state.ai.status === 'downloading';
+  elements.btnAiDownloadStatus.classList.toggle('hidden', !isDownloading);
+
+  if (isDownloading) {
+    const text = state.ai.lastMessage 
+      ? `${state.ai.lastMessage}`
+      : `AI Download: ${Math.round(state.ai.progress)}%`;
+    elements.aiDownloadStatusText.textContent = text;
+  }
+}
+
 function updateAiSettingsUI() {
-  const enabled = elements.settingAiEnabled?.checked ?? state.ai.enabled;
+  const enabled = state.ai.enabled;
   const unlocked = enabled && state.ai.status === 'ready';
   const downloading = state.ai.status === 'downloading';
 
-  state.ai.enabled = enabled;
+  // Sync UI elements with state
+  if (elements.settingAiEnabled) elements.settingAiEnabled.checked = enabled;
+  if (elements.settingAiSemanticId) elements.settingAiSemanticId.checked = state.ai.semanticIdSuggestion;
+  if (elements.settingAiAutoTranslate) elements.settingAiAutoTranslate.checked = state.ai.autoTranslateOnDiscovery;
+  if (elements.settingAiSourceLanguage) elements.settingAiSourceLanguage.value = state.ai.sourceLanguage;
+  if (elements.settingAiTargetLanguage) elements.settingAiTargetLanguage.value = state.ai.targetLanguage;
 
   updateAiStatusBadge();
 
@@ -6902,11 +6908,11 @@ function updateAiSettingsUI() {
     let label = state.ai.status === 'ready'
       ? t('ai_progress_ready')
       : `${t(phaseKey)} ${Math.round(state.ai.progress)}%`;
-    
+
     if (state.ai.status === 'downloading' && state.ai.lastMessage) {
       label = state.ai.lastMessage;
     }
-    
+
     elements.aiDownloadLabel.textContent = label;
   }
   elements.aiDownloadProgress?.classList.toggle('hidden', !downloading && state.ai.progress <= 0);
@@ -6926,7 +6932,6 @@ function updateAiSettingsUI() {
   if (elements.settingAiSourceLanguage) elements.settingAiSourceLanguage.disabled = !unlocked;
   if (elements.settingAiTargetLanguage) elements.settingAiTargetLanguage.disabled = !unlocked;
 }
-
 async function loadAiSettingsFromDb() {
   try {
     const [aiStatus, aiSettings] = await Promise.all([

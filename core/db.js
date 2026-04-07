@@ -7,7 +7,7 @@
  */
 
 const DB_NAME = 'd365fo-labels';
-const DB_VERSION = 6; // BUG-10: Unified DB version + text index for exact extractor reuse
+const DB_VERSION = 8; // Added sessions and backups stores creation logic
 
 const STORES = {
   LABELS: 'labels',
@@ -15,7 +15,9 @@ const STORES = {
   HANDLES: 'handles',
   CATALOG: 'catalog',  // SPEC-23: Virtual catalog
   BUILDER: 'builder_workspace',  // SPEC-32: Builder workspace
-  EXTRACTION: 'extraction_sessions' // SPEC-34: Extractor pause/resume sessions
+  EXTRACTION: 'extraction_sessions', // SPEC-34: Extractor pause/resume sessions
+  SESSIONS: 'builder_sessions', // SPEC-32: Builder session history
+  BACKUPS: 'extraction_backups' // SPEC-34: Extractor rollback backups
 };
 
 let db = null;
@@ -122,6 +124,20 @@ export async function initDB() {
         const extractionStore = database.createObjectStore(STORES.EXTRACTION, { keyPath: 'sessionId' });
         extractionStore.createIndex('updatedAt', 'updatedAt', { unique: false });
         extractionStore.createIndex('model', 'model', { unique: false });
+      }
+
+      // SPEC-32: Builder history sessions store
+      if (!database.objectStoreNames.contains(STORES.SESSIONS)) {
+        const sessionsStore = database.createObjectStore(STORES.SESSIONS, { keyPath: 'id' });
+        sessionsStore.createIndex('updatedAt', 'updatedAt', { unique: false });
+        sessionsStore.createIndex('status', 'status', { unique: false });
+      }
+
+      // SPEC-34: Refactoring Backups store
+      if (!database.objectStoreNames.contains(STORES.BACKUPS)) {
+        const backupsStore = database.createObjectStore(STORES.BACKUPS, { keyPath: 'id' });
+        backupsStore.createIndex('updatedAt', 'updatedAt', { unique: false });
+        backupsStore.createIndex('model', 'model', { unique: false });
       }
     };
   });
@@ -862,6 +878,114 @@ export async function removeExtractionSession(sessionId) {
     const request = store.delete(sessionId);
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
+  });
+}
+
+// ============================================
+// SPEC-32: Builder Session History Functions
+// ============================================
+
+/**
+ * Save a builder session snapshot
+ * @param {Object} session - { id, timestamp, model, labelCount, status, labels, targetCultures, zipBlob? }
+ */
+export async function saveBuilderSession(session) {
+  await initDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.SESSIONS, 'readwrite');
+    const store = tx.objectStore(STORES.SESSIONS);
+    const request = store.put({
+      ...session,
+      updatedAt: Date.now()
+    });
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * Get all builder sessions
+ * @returns {Promise<Array>}
+ */
+export async function getBuilderSessions() {
+  await initDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.SESSIONS, 'readonly');
+    const store = tx.objectStore(STORES.SESSIONS);
+    const request = store.getAll();
+    request.onsuccess = () => resolve((request.result || []).sort((a, b) => b.updatedAt - a.updatedAt));
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * Remove a builder session
+ * @param {string|number} sessionId 
+ */
+export async function removeBuilderSession(sessionId) {
+  await initDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.SESSIONS, 'readwrite');
+    const store = tx.objectStore(STORES.SESSIONS);
+    const request = store.delete(sessionId);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
+// ============================================
+// SPEC-34: Extraction Rollback Functions
+// ============================================
+
+/**
+ * Save a backup of project files before refactoring
+ * @param {Object} backup - { id, timestamp, model, files: [{name, content}] }
+ */
+export async function saveExtractionBackup(backup) {
+  await initDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.BACKUPS, 'readwrite');
+    const store = tx.objectStore(STORES.BACKUPS);
+    const request = store.put({
+      ...backup,
+      updatedAt: Date.now()
+    });
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * Get all extraction backups
+ * @returns {Promise<Array>}
+ */
+export async function getExtractionBackups() {
+  await initDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.BACKUPS, 'readonly');
+    const store = tx.objectStore(STORES.BACKUPS);
+    const request = store.getAll();
+    request.onsuccess = () => resolve((request.result || []).sort((a, b) => b.updatedAt - a.updatedAt));
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * Delete old backups (maintain only last 5)
+ */
+export async function pruneExtractionBackups(keepCount = 5) {
+  const backups = await getExtractionBackups();
+  if (backups.length <= keepCount) return;
+
+  const toDelete = backups.slice(keepCount);
+  await initDB();
+  
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.BACKUPS, 'readwrite');
+    const store = tx.objectStore(STORES.BACKUPS);
+    toDelete.forEach(b => store.delete(b.id));
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
   });
 }
 

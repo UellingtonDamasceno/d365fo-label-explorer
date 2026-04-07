@@ -69,16 +69,14 @@
             <span class="btn-icon">⚡</span> <span data-i18n="btn_quick_start">Start Quick Search</span>
           </button>
 
-          <label class="toggle-container background-indexing-option">
-            <label class="toggle-switch">
-              <input type="checkbox" id="chk-background-indexing" checked>
-              <span class="toggle-slider"></span>
-            </label>
-            <span class="toggle-label" data-i18n="background_indexing_label">Index remaining languages in background</span>
-          </label>
-        </div>
+  <label class="toggle-container background-indexing-option">
+    <input type="checkbox" id="chk-background-indexing" checked>
+    <span class="toggle-switch"></span>
+    <span class="toggle-label" data-i18n="background_indexing_label">Index remaining languages in background</span>
+  </label>
+</div>
 
-        <div id="indexing-progress" class="indexing-progress hidden">
+<div id="indexing-progress" class="indexing-progress hidden">
           <div class="progress-bar">
             <div id="progress-fill" class="progress-fill"></div>
           </div>
@@ -129,6 +127,10 @@
         <button id="btn-header-change-folder" class="btn btn-outline btn-sm" title="Change folder (Alt+E)">
           <span class="btn-icon">📁</span>
           <span class="btn-text" data-i18n="btn_change_folder">Change Folder</span>
+        </button>
+        <button id="btn-background-tasks" class="btn btn-outline btn-sm hidden" title="Ongoing background tasks">
+          <span class="btn-icon">⚡</span>
+          <span id="background-tasks-text" class="btn-text">Tasks: 0</span>
         </button>
         <button id="btn-ai-download-status" class="btn btn-outline btn-sm hidden" title="AI model download progress">
           <span class="btn-icon">🧠</span>
@@ -235,6 +237,71 @@
           </div>
         </div>
       </main>
+
+      <!-- Label Builder IDE Sidebar (SPEC-32 Redesigned) -->
+      <aside id="builder-modal" class="builder-sidebar hidden">
+        <div class="builder-content">
+          <div class="builder-header">
+            <h3>🏗️ <span data-i18n="builder_title">Label Builder</span></h3>
+            <div class="builder-header-actions">
+              <span id="builder-count-badge" class="builder-count">0 labels</span>
+              <button id="btn-close-builder-modal" class="btn-close">×</button>
+            </div>
+          </div>
+          
+          <!-- Direct Save Warning Banner -->
+          <div id="builder-direct-save-warning" class="builder-warning hidden">
+            ⚠️ <span data-i18n="builder_direct_save_warning">Direct Save mode active. Changes will be applied to original files.</span>
+          </div>
+          
+          <div class="builder-body">
+            <!-- Toolbar -->
+            <div class="builder-toolbar">
+              <button id="btn-builder-new" class="btn btn-outline btn-sm">
+                ➕ <span data-i18n="btn_new_label">New Label</span>
+              </button>
+              <button id="btn-builder-clear" class="btn btn-outline btn-sm">
+                🗑️ <span data-i18n="btn_clear_all">Clear All</span>
+              </button>
+              <div class="builder-toolbar-spacer"></div>
+              <select id="builder-culture-select" class="builder-culture-select">
+                <option value="en-US">en-US</option>
+                <option value="pt-BR">pt-BR</option>
+              </select>
+            </div>
+
+            <div class="builder-export-hint">
+              ✨ <span data-i18n="builder_export_translate_hint">Translation options are configured at export time.</span>
+            </div>
+
+            <div id="builder-translate-progress" class="builder-translate-progress hidden">
+              <div class="progress-bar">
+                <div id="builder-translate-fill" class="progress-fill"></div>
+              </div>
+              <span id="builder-translate-label" class="ai-progress-label">0%</span>
+            </div>
+            
+            <!-- Workspace List -->
+            <div id="builder-workspace" class="builder-workspace-list">
+              <div id="builder-empty-state" class="builder-empty-state">
+                <span class="empty-icon">📦</span>
+                <p data-i18n="builder_empty_hint">Add labels from search results or create new ones.</p>
+                <p class="hint" data-i18n="builder_tip">Tip: Press <kbd>+</kbd> on any label card to add it here.</p>
+              </div>
+              <div id="builder-items-list" class="builder-items-list hidden">
+                <!-- Builder items will be rendered here -->
+              </div>
+            </div>
+          </div>
+          
+          <div class="builder-footer">
+            <button id="btn-builder-finish" class="btn btn-outline" data-i18n="btn_finish_session">Finish Session</button>
+            <button id="btn-builder-download" class="btn btn-primary">
+              📦 <span data-i18n="btn_export_labels">Export Labels</span>
+            </button>
+          </div>
+        </div>
+      </aside>
     </div>
   </div>
 
@@ -825,7 +892,6 @@
       </div>
       
       <div class="modal-footer builder-footer">
-        <button id="btn-builder-finish" class="btn btn-outline" data-i18n="btn_finish_session">Finish Session</button>
         <button id="btn-builder-download" class="btn btn-primary">
           📦 <span data-i18n="btn_export_labels">Export Labels</span>
         </button>
