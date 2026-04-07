@@ -36,12 +36,13 @@ export async function selectDirectory() {
 
 /**
  * Request permission for a directory handle
- * @param {FileSystemDirectoryHandle} handle 
+ * @param {FileSystemDirectoryHandle|FileSystemFileHandle} handle 
+ * @param {'read'|'readwrite'} mode
  * @returns {Promise<boolean>} - true if permission granted
  */
-export async function requestPermission(handle) {
+export async function requestPermission(handle, mode = 'read') {
   try {
-    const options = { mode: 'read' };
+    const options = { mode };
     
     // Check current permission state
     if ((await handle.queryPermission(options)) === 'granted') {
@@ -58,6 +59,18 @@ export async function requestPermission(handle) {
     console.error('Permission request failed:', err);
     return false;
   }
+}
+
+/**
+ * Write text content to a file using File System Access API
+ * @param {FileSystemFileHandle} fileHandle
+ * @param {string} content
+ * @returns {Promise<void>}
+ */
+export async function writeFileAsText(fileHandle, content) {
+  const writable = await fileHandle.createWritable();
+  await writable.write(content);
+  await writable.close();
 }
 
 /**

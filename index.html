@@ -6,6 +6,7 @@
   <title>D365FO Label Explorer</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 </head>
 <body>
   <!-- Splash Screen (Initial Loading) -->
@@ -69,8 +70,10 @@
           </button>
 
           <label class="toggle-container background-indexing-option">
-            <input type="checkbox" id="chk-background-indexing" checked>
-            <span class="toggle-switch"></span>
+            <label class="toggle-switch">
+              <input type="checkbox" id="chk-background-indexing" checked>
+              <span class="toggle-slider"></span>
+            </label>
             <span class="toggle-label" data-i18n="background_indexing_label">Index remaining languages in background</span>
           </label>
         </div>
@@ -126,6 +129,10 @@
         <button id="btn-header-change-folder" class="btn btn-outline btn-sm" title="Change folder (Alt+E)">
           <span class="btn-icon">📁</span>
           <span class="btn-text" data-i18n="btn_change_folder">Change Folder</span>
+        </button>
+        <button id="btn-ai-download-status" class="btn btn-outline btn-sm hidden" title="AI model download progress">
+          <span class="btn-icon">🧠</span>
+          <span id="ai-download-status-text" class="btn-text">AI Downloading...</span>
         </button>
         <button id="btn-ai-translation-status" class="btn btn-outline btn-sm hidden" title="AI translation progress">
           <span class="btn-icon">✨</span>
@@ -761,8 +768,8 @@
     </div>
   </div>
 
-  <!-- Label Builder IDE Modal (SPEC-32) -->
-  <div id="builder-modal" class="modal-overlay hidden">
+  <!-- Label Builder IDE Docked Panel (SPEC-32) -->
+  <div id="builder-modal" class="builder-docked hidden">
     <div class="modal-content builder-modal-content">
       <div class="modal-header">
         <h3>🏗️ <span data-i18n="builder_title">Label Builder</span></h3>
@@ -793,29 +800,8 @@
             </select>
           </div>
 
-          <div class="builder-translate-controls">
-            <label class="display-option-label" for="builder-source-language" data-i18n="ai_translation_source">Source</label>
-            <select id="builder-source-language" class="builder-culture-select">
-              <option value="auto" data-i18n="ai_lang_auto">Auto detect</option>
-              <option value="en-US">en-US</option>
-              <option value="pt-BR">pt-BR</option>
-              <option value="es-ES">es-ES</option>
-              <option value="fr-FR">fr-FR</option>
-              <option value="de-DE">de-DE</option>
-            </select>
-
-            <label class="display-option-label" for="builder-target-languages" data-i18n="ai_translation_targets">Targets</label>
-            <select id="builder-target-languages" class="builder-target-select" multiple>
-              <option value="en-US">en-US</option>
-              <option value="pt-BR">pt-BR</option>
-              <option value="es-ES">es-ES</option>
-              <option value="fr-FR">fr-FR</option>
-              <option value="de-DE">de-DE</option>
-            </select>
-
-            <button id="btn-builder-auto-translate" class="btn btn-outline btn-sm">
-              ✨ <span data-i18n="ai_auto_translate_btn">Auto-Translate</span>
-            </button>
+          <div class="builder-export-hint">
+            ✨ <span data-i18n="builder_export_translate_hint">Translation options are configured at export time.</span>
           </div>
 
           <div id="builder-translate-progress" class="builder-translate-progress hidden">
@@ -839,8 +825,9 @@
       </div>
       
       <div class="modal-footer builder-footer">
+        <button id="btn-builder-finish" class="btn btn-outline" data-i18n="btn_finish_session">Finish Session</button>
         <button id="btn-builder-download" class="btn btn-primary">
-          📥 <span data-i18n="btn_download_file">Download Label File</span>
+          📦 <span data-i18n="btn_export_labels">Export Labels</span>
         </button>
       </div>
     </div>
@@ -940,53 +927,178 @@
     </div>
   </div>
 
-  <!-- Hardcoded String Extractor Modal (SPEC-34) -->
-  <div id="extractor-modal" class="modal-overlay hidden">
-    <div class="modal-content extractor-modal-content">
+  <!-- Builder Export Modal (multi-language + ZIP) -->
+  <div id="builder-export-modal" class="modal-overlay hidden">
+    <div class="modal-content export-modal-content">
       <div class="modal-header">
-        <h3>📤 <span data-i18n="extractor_title">Hardcoded String Extractor</span></h3>
-        <button id="btn-close-extractor-modal" class="btn-close">×</button>
+        <h3>📦 <span data-i18n="export_title">Export Labels</span></h3>
+        <button id="btn-close-export-modal" class="btn-close">×</button>
       </div>
       <div class="modal-body">
-        <p class="hint" data-i18n="extractor_hint">Select .xml/.xpp files (or .rnrproj plus related files) to extract hardcoded string candidates.</p>
-
-        <div class="extractor-actions">
-          <button id="btn-extractor-select-files" class="btn btn-outline btn-sm">
-            📁 <span data-i18n="btn_select_files">Select Files</span>
-          </button>
-          <button id="btn-extractor-start" class="btn btn-primary btn-sm">
-            🔎 <span data-i18n="extractor_start_scan">Scan Candidates</span>
-          </button>
-          <button id="btn-extractor-save-session" class="btn btn-outline btn-sm">
-            💾 <span data-i18n="extractor_save_session">Save Session</span>
-          </button>
-          <button id="btn-extractor-resume-session" class="btn btn-outline btn-sm">
-            ♻️ <span data-i18n="extractor_resume_session">Resume Last Session</span>
-          </button>
-        </div>
-
-        <div id="extractor-progress" class="builder-translate-progress hidden">
-          <div class="progress-bar">
-            <div id="extractor-progress-fill" class="progress-fill"></div>
+        <div class="export-section">
+          <h4 data-i18n="export_source_language">Source Language</h4>
+          <div class="export-source-info">
+            <span id="export-source-culture" class="export-culture-badge">en-US</span>
+            <span id="export-label-count" class="export-count">0 labels</span>
           </div>
-          <span id="extractor-progress-label" class="ai-progress-label">0%</span>
         </div>
-
-        <div id="extractor-summary" class="extractor-summary hidden"></div>
-
-        <div id="extractor-results" class="extractor-results hidden">
-          <!-- candidates rendered dynamically -->
+        
+        <div class="export-section">
+          <h4 data-i18n="export_target_languages">Target Languages (Auto-Translation)</h4>
+          <p class="hint" data-i18n="export_translation_hint">Select additional languages to generate translated versions.</p>
+          <div id="export-language-checkboxes" class="export-language-grid">
+            <label class="export-lang-checkbox"><input type="checkbox" value="en-US"> en-US</label>
+            <label class="export-lang-checkbox"><input type="checkbox" value="pt-BR"> pt-BR</label>
+            <label class="export-lang-checkbox"><input type="checkbox" value="es-ES"> es-ES</label>
+            <label class="export-lang-checkbox"><input type="checkbox" value="fr-FR"> fr-FR</label>
+            <label class="export-lang-checkbox"><input type="checkbox" value="de-DE"> de-DE</label>
+            <label class="export-lang-checkbox"><input type="checkbox" value="it-IT"> it-IT</label>
+            <label class="export-lang-checkbox"><input type="checkbox" value="nl-NL"> nl-NL</label>
+            <label class="export-lang-checkbox"><input type="checkbox" value="ja-JP"> ja-JP</label>
+            <label class="export-lang-checkbox"><input type="checkbox" value="zh-CN"> zh-CN</label>
+            <label class="export-lang-checkbox"><input type="checkbox" value="ko-KR"> ko-KR</label>
+          </div>
+          <div id="export-ai-warning" class="export-ai-warning hidden">
+            ⚠️ <span data-i18n="export_ai_not_ready">AI translation is not ready. Download the model in Settings (Alt+P) to enable auto-translation.</span>
+          </div>
+        </div>
+        
+        <div class="export-section">
+          <h4 data-i18n="export_file_prefix">File Prefix</h4>
+          <input type="text" id="export-file-prefix" class="form-input" placeholder="MyLabels" value="Labels">
+          <small class="form-hint" data-i18n="export_prefix_hint">Output: {Prefix}.{culture}.label.txt</small>
+        </div>
+        
+        <div id="export-progress-section" class="export-progress-section hidden">
+          <div class="progress-bar">
+            <div id="export-progress-fill" class="progress-fill"></div>
+          </div>
+          <span id="export-progress-label" class="export-progress-label">Preparing...</span>
         </div>
       </div>
       <div class="modal-footer">
-        <button id="btn-extractor-add-all" class="btn btn-success hidden">
-          ➕ <span data-i18n="extractor_add_all">Add All to Builder</span>
+        <button id="btn-export-cancel" class="btn btn-outline" data-i18n="btn_cancel">Cancel</button>
+        <button id="btn-export-generate" class="btn btn-primary">
+          🚀 <span data-i18n="btn_generate_export">Generate & Export</span>
         </button>
       </div>
     </div>
   </div>
 
+  <!-- Hardcoded String Extractor Workspace (SPEC-34 Redesigned) -->
+  <div id="extractor-workspace" class="extractor-workspace hidden">
+    <div class="extractor-workspace-header">
+      <div class="extractor-header-left">
+        <h2>📤 <span data-i18n="extractor_title">Hardcoded String Extractor</span></h2>
+        <span id="extractor-status-badge" class="extractor-status-badge">Ready</span>
+      </div>
+      <div class="extractor-header-actions">
+        <button id="btn-extractor-close" class="btn btn-outline btn-sm">
+          ✕ <span data-i18n="btn_close">Close</span>
+        </button>
+      </div>
+    </div>
+    
+    <div class="extractor-main">
+      <!-- Left Panel: Project/Files Tree -->
+      <div class="extractor-panel extractor-files-panel">
+        <div class="extractor-panel-header">
+          <h3 data-i18n="extractor_project_files">Project Files</h3>
+          <div class="extractor-file-actions">
+            <button id="btn-extractor-select-project" class="btn btn-sm btn-outline" title="Select .rnrproj file">
+              📋 <span data-i18n="btn_select_project">.rnrproj</span>
+            </button>
+            <button id="btn-extractor-select-files" class="btn btn-sm btn-outline" title="Select files manually">
+              📁 <span data-i18n="btn_select_files">Files</span>
+            </button>
+          </div>
+        </div>
+        <div id="extractor-project-info" class="extractor-project-info hidden">
+          <span class="project-name" id="extractor-project-name">Project Name</span>
+          <span class="project-model" id="extractor-project-model">Model</span>
+        </div>
+        <div id="extractor-file-tree" class="extractor-file-tree">
+          <div class="extractor-empty-files">
+            <span class="empty-icon">📂</span>
+            <p data-i18n="extractor_no_files">No files loaded</p>
+            <p class="hint" data-i18n="extractor_select_hint">Select a .rnrproj file or individual .xml/.xpp files to begin.</p>
+          </div>
+        </div>
+        <div class="extractor-file-stats" id="extractor-file-stats">
+          <span id="extractor-files-count">0 files</span>
+          <span id="extractor-files-scanned">0 scanned</span>
+        </div>
+      </div>
+      
+      <!-- Right Panel: Candidates Resolution -->
+      <div class="extractor-panel extractor-candidates-panel">
+        <div class="extractor-panel-header">
+          <h3 data-i18n="extractor_candidates">String Candidates</h3>
+          <div class="extractor-candidate-actions">
+            <button id="btn-extractor-start" class="btn btn-sm btn-primary">
+              🔎 <span data-i18n="extractor_start_scan">Scan</span>
+            </button>
+            <select id="extractor-target-file" class="extractor-target-select">
+              <option value="">-- Target Label File --</option>
+            </select>
+          </div>
+        </div>
+        
+        <div id="extractor-progress" class="extractor-progress-bar hidden">
+          <div class="progress-bar">
+            <div id="extractor-progress-fill" class="progress-fill"></div>
+          </div>
+          <span id="extractor-progress-label" class="progress-label">0%</span>
+        </div>
+        
+        <div id="extractor-summary" class="extractor-summary hidden">
+          <div class="summary-stat">
+            <span class="stat-value" id="extractor-total-found">0</span>
+            <span class="stat-label" data-i18n="extractor_strings_found">strings found</span>
+          </div>
+          <div class="summary-stat">
+            <span class="stat-value" id="extractor-resolved-count">0</span>
+            <span class="stat-label" data-i18n="extractor_resolved">resolved</span>
+          </div>
+          <div class="summary-stat">
+            <span class="stat-value" id="extractor-ignored-count">0</span>
+            <span class="stat-label" data-i18n="extractor_ignored">ignored</span>
+          </div>
+        </div>
+        
+        <div id="extractor-results" class="extractor-results">
+          <div class="extractor-empty-results">
+            <span class="empty-icon">🔍</span>
+            <p data-i18n="extractor_no_candidates">No candidates yet</p>
+            <p class="hint" data-i18n="extractor_scan_hint">Load files and click Scan to find hardcoded strings.</p>
+          </div>
+        </div>
+        
+        <div class="extractor-footer">
+          <div class="extractor-footer-left">
+            <label class="extractor-auto-save">
+              <input type="checkbox" id="extractor-auto-save" checked>
+              <span data-i18n="extractor_auto_save">Auto-save progress</span>
+            </label>
+          </div>
+          <div class="extractor-footer-right">
+            <button id="btn-extractor-add-all" class="btn btn-success btn-sm" disabled>
+              ➕ <span data-i18n="extractor_add_all">Add All to Builder</span>
+            </button>
+            <button id="btn-extractor-rollback" class="btn btn-outline btn-sm">
+              ↩️ <span data-i18n="btn_rollback">Rollback</span>
+            </button>
+            <button id="btn-extractor-apply" class="btn btn-primary btn-sm" disabled>
+              ✅ <span data-i18n="btn_apply">Apply Changes</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Scripts -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="libs/flexsearch.bundle.min.js"></script>
   <script type="module" src="app.js"></script>
 </body>

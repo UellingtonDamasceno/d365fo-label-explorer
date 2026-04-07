@@ -2,15 +2,56 @@ let translatorPipeline = null;
 let initInProgress = false;
 let isReady = false;
 
-function fallbackTranslate(text, targetLanguage) {
-  const normalized = (targetLanguage || '').toLowerCase();
-  if (!text) return text;
+/**
+ * Map D365FO culture codes to M2M100 language codes.
+ * M2M100 uses ISO 639-1 codes, not full locales.
+ */
+const LOCALE_TO_M2M100 = {
+  'en-us': 'en',
+  'en-gb': 'en',
+  'pt-br': 'pt',
+  'pt-pt': 'pt',
+  'es-es': 'es',
+  'es-mx': 'es',
+  'fr-fr': 'fr',
+  'fr-ca': 'fr',
+  'de-de': 'de',
+  'de-at': 'de',
+  'it-it': 'it',
+  'nl-nl': 'nl',
+  'ru-ru': 'ru',
+  'zh-cn': 'zh',
+  'zh-hans': 'zh',
+  'zh-tw': 'zh',
+  'zh-hant': 'zh',
+  'ja-jp': 'ja',
+  'ko-kr': 'ko',
+  'ar-sa': 'ar',
+  'pl-pl': 'pl',
+  'tr-tr': 'tr',
+  'sv-se': 'sv',
+  'da-dk': 'da',
+  'fi-fi': 'fi',
+  'nb-no': 'no',
+  'nn-no': 'no'
+};
 
-  if (normalized.startsWith('pt')) return `[PT] ${text}`;
-  if (normalized.startsWith('es')) return `[ES] ${text}`;
-  if (normalized.startsWith('fr')) return `[FR] ${text}`;
-  if (normalized.startsWith('de')) return `[DE] ${text}`;
-  return text;
+function mapLocaleToM2M100(locale) {
+  if (!locale) return 'en';
+  const normalized = locale.toLowerCase().trim();
+
+  // Direct match
+  if (LOCALE_TO_M2M100[normalized]) {
+    return LOCALE_TO_M2M100[normalized];
+  }
+
+  // Try first part only (e.g., 'en' from 'en-US')
+  const shortCode = normalized.split('-')[0];
+  if (shortCode && shortCode.length === 2) {
+    return shortCode;
+  }
+
+  return 'en';
 }
 
 async function initTranslator() {
@@ -63,12 +104,17 @@ async function translateJobs(jobs = []) {
   for (let i = 0; i < total; i++) {
     const job = jobs[i];
     let translatedText = job.text || '';
+    let error = null;
+
+    // Map locales to M2M100 codes
+    const srcLang = mapLocaleToM2M100(job.sourceLanguage || job.sourceCulture);
+    const tgtLang = mapLocaleToM2M100(job.targetLanguage || job.targetCulture);
 
     try {
-      if (translatorPipeline) {
+      if (translatorPipeline && srcLang !== tgtLang) {
         const output = await translatorPipeline(translatedText, {
-          src_lang: job.sourceLanguage || 'en',
-          tgt_lang: job.targetLanguage || 'en',
+          src_lang: srcLang,
+          tgt_lang: tgtLang,
           max_length: 256
         });
 
@@ -77,13 +123,17 @@ async function translateJobs(jobs = []) {
         } else if (output?.translation_text) {
           translatedText = output.translation_text;
         } else {
-          translatedText = fallbackTranslate(translatedText, job.targetLanguage);
+          // No output - mark as error, keep original
+          error = 'no_output';
         }
-      } else {
-        translatedText = fallbackTranslate(translatedText, job.targetLanguage);
+      } else if (!translatorPipeline) {
+        // Model not loaded - honest error
+        error = 'model_not_ready';
       }
+      // If srcLang === tgtLang, keep original text (no error)
     } catch (err) {
-      translatedText = fallbackTranslate(translatedText, job.targetLanguage);
+      // Real translation error - honest error reporting
+      error = err?.message || 'translation_failed';
     }
 
     translations.push({
@@ -91,7 +141,8 @@ async function translateJobs(jobs = []) {
       labelId: job.labelId,
       sourceCulture: job.sourceCulture,
       targetCulture: job.targetCulture,
-      translatedText
+      translatedText,
+      error
     });
 
     if ((i + 1) % 5 === 0 || i === total - 1) {

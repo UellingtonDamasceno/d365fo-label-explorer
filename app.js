@@ -34,7 +34,8 @@ const state = {
     labelFormat: 'full', // 'full', 'simple', 'hybrid'
     groupDuplicates: true,
     uiLanguage: 'auto',
-    builderDirectSaveMode: false
+    builderDirectSaveMode: false,
+    suppressRepeatedDownloadPrompt: false
   },
   sortPreference: 'relevance',
   selectorModal: {
@@ -89,6 +90,7 @@ const state = {
     status: 'inactive', // inactive | downloading | ready
     progress: 0,
     progressPhase: 'downloading',
+    lastMessage: '',
     semanticIdSuggestion: false,
     autoTranslateOnDiscovery: false,
     sourceLanguage: 'auto',
@@ -235,6 +237,8 @@ function cacheElements() {
     lastIndexed: document.getElementById('last-indexed'),
     btnRescan: document.getElementById('btn-rescan'),
     btnHeaderChangeFolder: document.getElementById('btn-header-change-folder'),
+    btnAiDownloadStatus: document.getElementById('btn-ai-download-status'),
+    aiDownloadStatusText: document.getElementById('ai-download-status-text'),
     btnAiTranslationStatus: document.getElementById('btn-ai-translation-status'),
     aiTranslationStatusText: document.getElementById('ai-translation-status-text'),
     btnShortcutsHelp: document.getElementById('btn-shortcuts-help'),
@@ -427,19 +431,45 @@ function cacheElements() {
     btnConflictOverwrite: document.getElementById('btn-conflict-overwrite'),
     btnConflictSkip: document.getElementById('btn-conflict-skip'),
 
-    // SPEC-34: Hardcoded String Extractor
-    extractorModal: document.getElementById('extractor-modal'),
-    btnCloseExtractorModal: document.getElementById('btn-close-extractor-modal'),
+    // Export Modal (SPEC-32/33 multi-language + ZIP)
+    exportModal: document.getElementById('builder-export-modal'),
+    btnCloseExportModal: document.getElementById('btn-close-export-modal'),
+    exportSourceCulture: document.getElementById('export-source-culture'),
+    exportLabelCount: document.getElementById('export-label-count'),
+    exportLanguageCheckboxes: document.getElementById('export-language-checkboxes'),
+    exportAiWarning: document.getElementById('export-ai-warning'),
+    exportFilePrefix: document.getElementById('export-file-prefix'),
+    exportProgressSection: document.getElementById('export-progress-section'),
+    exportProgressFill: document.getElementById('export-progress-fill'),
+    exportProgressLabel: document.getElementById('export-progress-label'),
+    btnExportCancel: document.getElementById('btn-export-cancel'),
+    btnExportGenerate: document.getElementById('btn-export-generate'),
+
+    // SPEC-34: Hardcoded String Extractor (Redesigned Workspace)
+    extractorWorkspace: document.getElementById('extractor-workspace'),
+    btnExtractorClose: document.getElementById('btn-extractor-close'),
+    btnExtractorSelectProject: document.getElementById('btn-extractor-select-project'),
     btnExtractorSelectFiles: document.getElementById('btn-extractor-select-files'),
     btnExtractorStart: document.getElementById('btn-extractor-start'),
-    btnExtractorSaveSession: document.getElementById('btn-extractor-save-session'),
-    btnExtractorResumeSession: document.getElementById('btn-extractor-resume-session'),
+    extractorStatusBadge: document.getElementById('extractor-status-badge'),
+    extractorProjectInfo: document.getElementById('extractor-project-info'),
+    extractorProjectName: document.getElementById('extractor-project-name'),
+    extractorProjectModel: document.getElementById('extractor-project-model'),
+    extractorFileTree: document.getElementById('extractor-file-tree'),
+    extractorFilesCount: document.getElementById('extractor-files-count'),
+    extractorFilesScanned: document.getElementById('extractor-files-scanned'),
+    extractorTargetFile: document.getElementById('extractor-target-file'),
     extractorProgress: document.getElementById('extractor-progress'),
     extractorProgressFill: document.getElementById('extractor-progress-fill'),
     extractorProgressLabel: document.getElementById('extractor-progress-label'),
     extractorSummary: document.getElementById('extractor-summary'),
+    extractorTotalFound: document.getElementById('extractor-total-found'),
+    extractorResolvedCount: document.getElementById('extractor-resolved-count'),
+    extractorIgnoredCount: document.getElementById('extractor-ignored-count'),
     extractorResults: document.getElementById('extractor-results'),
-    btnExtractorAddAll: document.getElementById('btn-extractor-add-all')
+    extractorAutoSave: document.getElementById('extractor-auto-save'),
+    btnExtractorAddAll: document.getElementById('btn-extractor-add-all'),
+    btnExtractorApply: document.getElementById('btn-extractor-apply')
   };
 }
 
@@ -603,7 +633,7 @@ function setupEventListeners() {
     if (e.target === elements.toolsModal) closeToolsModal();
   });
   elements.btnToolMerger?.addEventListener('click', openMergerModal);
-  elements.btnToolExtractor?.addEventListener('click', openExtractorModal);
+  elements.btnToolExtractor?.addEventListener('click', openExtractorWorkspace);
 
   // SPEC-36: Merger Modal
   elements.btnCloseMergerModal?.addEventListener('click', closeMergerModal);
@@ -615,19 +645,19 @@ function setupEventListeners() {
   elements.btnMergerAddMore?.addEventListener('click', handleMergerSelectFiles);
   elements.btnMergerClearFiles?.addEventListener('click', handleMergerClearFiles);
   elements.btnMergerBack?.addEventListener('click', handleMergerBack);
-  elements.btnMergerMerge?.addEventListener('click', handleMergerMerge);
+  elements.btnMergerMerge?.addEventListener('click', () => {
+    handleMergerMerge().catch(() => {});
+  });
   elements.btnMergerDownload?.addEventListener('click', handleMergerDownload);
   setupMergerDropzone();
 
   // SPEC-32: Builder Modal
   elements.btnToolBuilder?.addEventListener('click', openBuilderModal);
   elements.btnCloseBuilderModal?.addEventListener('click', closeBuilderModal);
-  elements.builderModal?.addEventListener('click', (e) => {
-    if (e.target === elements.builderModal) closeBuilderModal();
-  });
   elements.btnBuilderNew?.addEventListener('click', openNewLabelModal);
   elements.btnBuilderClear?.addEventListener('click', handleBuilderClear);
-  elements.btnBuilderDownload?.addEventListener('click', handleBuilderDownload);
+  elements.btnBuilderFinish?.addEventListener('click', handleBuilderFinish);
+  elements.btnBuilderDownload?.addEventListener('click', openExportModal);
   elements.btnBuilderAutoTranslate?.addEventListener('click', handleBuilderAutoTranslate);
   
   // SPEC-32: New Label Modal
@@ -648,16 +678,21 @@ function setupEventListeners() {
     if (e.target === elements.conflictModal) closeConflictModal();
   });
 
-  // SPEC-34: Extractor Modal
-  elements.btnCloseExtractorModal?.addEventListener('click', closeExtractorModal);
-  elements.extractorModal?.addEventListener('click', (e) => {
-    if (e.target === elements.extractorModal) closeExtractorModal();
+  // Export Modal
+  elements.btnCloseExportModal?.addEventListener('click', closeExportModal);
+  elements.btnExportCancel?.addEventListener('click', closeExportModal);
+  elements.btnExportGenerate?.addEventListener('click', handleExportGenerate);
+  elements.exportModal?.addEventListener('click', (e) => {
+    if (e.target === elements.exportModal) closeExportModal();
   });
+
+  // SPEC-34: Extractor Workspace
+  elements.btnExtractorClose?.addEventListener('click', closeExtractorWorkspace);
+  elements.btnExtractorSelectProject?.addEventListener('click', handleExtractorSelectProject);
   elements.btnExtractorSelectFiles?.addEventListener('click', handleExtractorSelectFiles);
   elements.btnExtractorStart?.addEventListener('click', handleExtractorStartScan);
   elements.btnExtractorAddAll?.addEventListener('click', handleExtractorAddAllToBuilder);
-  elements.btnExtractorSaveSession?.addEventListener('click', handleExtractorSaveSession);
-  elements.btnExtractorResumeSession?.addEventListener('click', handleExtractorResumeLastSession);
+  elements.btnExtractorApply?.addEventListener('click', handleExtractorApplyChanges);
   
   // Keyboard shortcuts
   document.addEventListener('keydown', handleKeyboardShortcuts);
@@ -688,7 +723,6 @@ function handleKeyboardShortcuts(e) {
                        !elements.statsDashboardModal?.classList.contains('hidden') ||
                        !elements.toolsModal?.classList.contains('hidden') ||
                        !elements.mergerModal?.classList.contains('hidden') ||
-                       !elements.builderModal?.classList.contains('hidden') ||
                        !elements.newLabelModal?.classList.contains('hidden') ||
                        !elements.conflictModal?.classList.contains('hidden') ||
                        !elements.extractorModal?.classList.contains('hidden');
@@ -763,8 +797,15 @@ function handleKeyboardShortcuts(e) {
     return;
   }
   
+  // Ctrl+Z to undo in Builder
+  if (e.ctrlKey && e.key.toLowerCase() === 'z' && builderModalOpen && !builderSubModalOpen && !isInputFocused) {
+    e.preventDefault();
+    undoBuilderChange();
+    return;
+  }
+
   // Ctrl+Z to undo selection (only when in dashboard)
-  if (e.ctrlKey && e.key === 'z' && state.stage === 'DASHBOARD') {
+  if (e.ctrlKey && e.key.toLowerCase() === 'z' && state.stage === 'DASHBOARD') {
     e.preventDefault();
     handleUndoSelection();
     return;
@@ -1866,7 +1907,10 @@ async function indexFilesWithWorkers(fileTasks, isPriority = false, options = {}
     
     if (workerFiles.length === 0) continue;
     
-    const worker = new Worker('./workers/indexer.worker.js');
+    const worker = new Worker(
+      new URL('./workers/indexer.worker.js', import.meta.url),
+      { type: 'module' }
+    );
     workers.push(worker);
     workerStats.set(i, { labels: 0, files: 0 });
     
@@ -3437,6 +3481,7 @@ function resetMergerState() {
   
   if (elements.btnMergerMerge) {
     elements.btnMergerMerge.disabled = true;
+    elements.btnMergerMerge.innerHTML = `<span data-i18n="btn_merge">${t('btn_merge') || 'Merge Files'}</span>`;
   }
   if (elements.mergerFilesContainer) {
     elements.mergerFilesContainer.innerHTML = '';
@@ -3444,6 +3489,18 @@ function resetMergerState() {
   if (elements.mergerPreviewContent) {
     elements.mergerPreviewContent.textContent = '';
   }
+}
+
+function setMergerMergeButtonLoading(isLoading) {
+  if (!elements.btnMergerMerge) return;
+  if (isLoading) {
+    elements.btnMergerMerge.disabled = true;
+    elements.btnMergerMerge.innerHTML = `<span data-i18n="merging">${t('merging') || 'Merging...'}</span>`;
+    return;
+  }
+
+  elements.btnMergerMerge.innerHTML = `<span data-i18n="btn_merge">${t('btn_merge') || 'Merge Files'}</span>`;
+  elements.btnMergerMerge.disabled = mergerState.files.length < 2;
 }
 
 function setupMergerDropzone() {
@@ -3556,6 +3613,7 @@ function handleMergerBack() {
   
   mergerState.mergeResult = null;
   mergerState.resolvedConflicts.clear();
+  setMergerMergeButtonLoading(false);
 }
 
 async function handleMergerMerge() {
@@ -3569,13 +3627,9 @@ async function handleMergerMerge() {
     mergerState.worker = new Worker('./workers/merger.worker.js');
   }
   
-  // Show loading
-  if (elements.btnMergerMerge) {
-    elements.btnMergerMerge.disabled = true;
-    elements.btnMergerMerge.textContent = t('merging') || 'Merging...';
-  }
+  setMergerMergeButtonLoading(true);
   
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     mergerState.worker.onmessage = (e) => {
       const { type, payload } = e.data;
       
@@ -3595,6 +3649,17 @@ async function handleMergerMerge() {
         showMergeResults();
         resolve();
       }
+
+      if (type === 'ERROR') {
+        showError(payload?.message || t('merger_error_generic') || 'Failed to merge files');
+        reject(new Error(payload?.message || 'Merger worker error'));
+      }
+    };
+
+    mergerState.worker.onerror = (err) => {
+      console.error('Merger worker error:', err);
+      showError(t('merger_error_generic') || 'Failed to merge files');
+      reject(err);
     };
     
     // Start parsing
@@ -3604,6 +3669,8 @@ async function handleMergerMerge() {
         files: mergerState.files.map(f => ({ name: f.name, content: f.content }))
       }
     });
+  }).finally(() => {
+    setMergerMergeButtonLoading(false);
   });
 }
 
@@ -3799,7 +3866,7 @@ function handleMergerDownload() {
 
 // Builder State
 const builderState = {
-  labels: [], // Array of { id (db), labelId, culture, text, helpText, prefix, source }
+  labels: [], // Array of { id (db), labelId, culture, text, helpText, prefix, source, sourceModel, sourcePath }
   pendingConflict: null, // { existingLabel, newLabel }
   conflictResolveCallback: null, // Function to call after conflict resolution
   selectedLabelId: null,
@@ -3808,7 +3875,12 @@ const builderState = {
   translating: false,
   translateProgress: 0,
   pendingInit: null,
-  pendingTranslate: null
+  pendingTranslate: null,
+  directSaving: false,
+  history: [],
+  isDirty: false,
+  lastDownloadedSignature: '',
+  undoApplying: false
 };
 
 function applyBuilderDirectSaveVisualState() {
@@ -3817,6 +3889,73 @@ function applyBuilderDirectSaveVisualState() {
 
   elements.builderDirectSaveWarning?.classList.toggle('hidden', !directSaveActive);
   modalContent?.classList.toggle('direct-save-active', directSaveActive);
+}
+
+function markBuilderDirty() {
+  builderState.isDirty = true;
+}
+
+function cloneBuilderLabels(labels) {
+  return labels.map((item) => ({ ...item }));
+}
+
+function pushBuilderHistorySnapshot() {
+  if (builderState.undoApplying) return;
+  builderState.history.push({
+    labels: cloneBuilderLabels(builderState.labels),
+    selectedLabelId: builderState.selectedLabelId
+  });
+  if (builderState.history.length > 10) {
+    builderState.history.shift();
+  }
+}
+
+async function restoreBuilderSnapshot(snapshot) {
+  builderState.undoApplying = true;
+  try {
+    await db.clearBuilderWorkspace();
+    const restored = [];
+    for (const label of snapshot.labels || []) {
+      const entry = { ...label };
+      delete entry.id;
+      const id = await db.addBuilderLabel(entry);
+      restored.push({ ...entry, id });
+    }
+
+    builderState.labels = restored;
+    const selectedOriginal = (snapshot.labels || []).find((item) => item.id === snapshot.selectedLabelId);
+    if (selectedOriginal) {
+      const selectedRestored = restored.find((item) =>
+        item.labelId === selectedOriginal.labelId &&
+        item.culture === selectedOriginal.culture &&
+        item.text === selectedOriginal.text
+      );
+      builderState.selectedLabelId = selectedRestored?.id || restored[0]?.id || null;
+    } else {
+      builderState.selectedLabelId = restored[0]?.id || null;
+    }
+
+    renderBuilderItems();
+    updateBuilderFooter();
+  } finally {
+    builderState.undoApplying = false;
+  }
+}
+
+async function undoBuilderChange() {
+  if (!builderState.history.length) {
+    showInfo(t('builder_undo_empty'));
+    return;
+  }
+  try {
+    const snapshot = builderState.history.pop();
+    await restoreBuilderSnapshot(snapshot);
+    markBuilderDirty();
+    showSuccess(t('builder_undo_done'));
+  } catch (err) {
+    console.error('Failed to undo builder change:', err);
+    showError(t('builder_update_error'));
+  }
 }
 
 function openBuilderModal() {
@@ -3834,15 +3973,20 @@ function openBuilderModal() {
   updateBuilderTranslateProgress(0, t('ai_translation_idle'));
   loadBuilderWorkspace();
   elements.builderModal?.classList.remove('hidden');
+  elements.app?.classList.add('builder-open');
 }
 
 function closeBuilderModal() {
   elements.builderModal?.classList.add('hidden');
+  elements.app?.classList.remove('builder-open');
 }
 
 async function loadBuilderWorkspace() {
   try {
     builderState.labels = await db.getBuilderLabels();
+    builderState.history = [];
+    builderState.isDirty = false;
+    builderState.lastDownloadedSignature = '';
     if (!builderState.labels.some(l => l.id === builderState.selectedLabelId)) {
       builderState.selectedLabelId = builderState.labels.length > 0 ? builderState.labels[0].id : null;
     }
@@ -3936,6 +4080,10 @@ function updateBuilderFooter() {
 
 async function addLabelToBuilder(labelData) {
   const sourceLabel = labelData?.occurrences?.[0] || labelData || {};
+  const sourcePath = String(sourceLabel.fileName || sourceLabel.sourcePath || 'unknown').replace(/^\/+/, '');
+  const sourceValue = sourceLabel.model
+    ? (sourcePath.startsWith(`${sourceLabel.model}/`) ? sourcePath : `${sourceLabel.model}/${sourcePath}`)
+    : 'Search Result';
 
   // Prepare label for builder
   const newLabel = {
@@ -3944,7 +4092,9 @@ async function addLabelToBuilder(labelData) {
     text: sourceLabel.text || '',
     helpText: sourceLabel.helpText || sourceLabel.help || '',
     prefix: sourceLabel.prefix || sourceLabel.fullId?.split(':')[0]?.replace('@', '') || '',
-    source: sourceLabel.model ? `${sourceLabel.model}/${sourceLabel.fileName || 'unknown'}` : 'Search Result'
+    source: sourceValue,
+    sourceModel: sourceLabel.model || sourceLabel.sourceModel || '',
+    sourcePath
   };
 
   if (!newLabel.labelId || !newLabel.text) {
@@ -3973,10 +4123,12 @@ async function addLabelToBuilder(labelData) {
   
   // No conflict, add directly
   try {
+    pushBuilderHistorySnapshot();
     const id = await db.addBuilderLabel(newLabel);
     newLabel.id = id;
     builderState.labels.push(newLabel);
     builderState.selectedLabelId = id;
+    markBuilderDirty();
     renderBuilderItems();
     updateBuilderFooter();
     showSuccess(t('builder_label_added') || `Added "${newLabel.labelId}" to builder`);
@@ -3988,11 +4140,13 @@ async function addLabelToBuilder(labelData) {
 
 async function removeBuilderItem(id) {
   try {
+    pushBuilderHistorySnapshot();
     await db.removeBuilderLabel(id);
     builderState.labels = builderState.labels.filter(l => l.id !== id);
     if (builderState.selectedLabelId === id) {
       builderState.selectedLabelId = builderState.labels.length > 0 ? builderState.labels[0].id : null;
     }
+    markBuilderDirty();
     renderBuilderItems();
     updateBuilderFooter();
     showSuccess(t('builder_label_removed') || 'Label removed from workspace');
@@ -4073,11 +4227,13 @@ async function handleSaveNewLabel() {
     // Update existing label
     const id = parseInt(editingId);
     try {
+      pushBuilderHistorySnapshot();
       await db.updateBuilderLabel(id, { labelId, text, helpText, prefix });
       const idx = builderState.labels.findIndex(l => l.id === id);
       if (idx !== -1) {
         builderState.labels[idx] = { ...builderState.labels[idx], labelId, text, helpText, prefix };
       }
+      markBuilderDirty();
       renderBuilderItems();
       closeNewLabelModal();
       showSuccess(t('builder_label_updated') || 'Label updated');
@@ -4110,10 +4266,12 @@ async function handleSaveNewLabel() {
     }
     
     try {
+      pushBuilderHistorySnapshot();
       const id = await db.addBuilderLabel(newLabel);
       newLabel.id = id;
       builderState.labels.push(newLabel);
       builderState.selectedLabelId = id;
+      markBuilderDirty();
       renderBuilderItems();
       updateBuilderFooter();
       closeNewLabelModal();
@@ -4192,6 +4350,7 @@ async function resolveConflict(action) {
         
       case 'overwrite':
         // Replace existing with new
+        pushBuilderHistorySnapshot();
         await db.updateBuilderLabel(existingLabel.id, {
           text: newLabel.text,
           helpText: newLabel.helpText,
@@ -4209,11 +4368,13 @@ async function resolveConflict(action) {
           };
         }
         renderBuilderItems();
+        markBuilderDirty();
         showSuccess(t('builder_conflict_overwritten') || 'Label overwritten');
         break;
         
       case 'rename':
         // Add with auto-renamed ID
+        pushBuilderHistorySnapshot();
         let suffix = 1;
         let renamedId = `${newLabel.labelId}${suffix}`;
         while (builderState.labels.some(l => l.labelId === renamedId && l.culture === newLabel.culture)) {
@@ -4225,6 +4386,7 @@ async function resolveConflict(action) {
         renamedLabel.id = id;
         builderState.labels.push(renamedLabel);
         builderState.selectedLabelId = id;
+        markBuilderDirty();
         renderBuilderItems();
         updateBuilderFooter();
         showSuccess(t('builder_conflict_renamed') || `Added as "${renamedId}"`);
@@ -4246,9 +4408,11 @@ async function handleBuilderClear() {
   }
   
   try {
+    pushBuilderHistorySnapshot();
     await db.clearBuilderWorkspace();
     builderState.labels = [];
     builderState.selectedLabelId = null;
+    markBuilderDirty();
     renderBuilderItems();
     updateBuilderFooter();
     showSuccess(t('builder_cleared') || 'Workspace cleared');
@@ -4258,52 +4422,750 @@ async function handleBuilderClear() {
   }
 }
 
-function handleBuilderDownload() {
-  if (builderState.labels.length === 0) {
-    showError(t('builder_empty') || 'No labels to download');
-    return;
-  }
-  
-  // Sort labels alphabetically by labelId
-  const sortedLabels = [...builderState.labels].sort((a, b) => 
-    a.labelId.localeCompare(b.labelId)
-  );
-  
-  // Generate label file content
-  const lines = sortedLabels.map(label => {
-    // Escape semicolons by doubling them
-    const escapedText = label.text.replace(/;/g, ';;');
-    let line = `${label.labelId}=${escapedText}`;
-    
-    if (label.helpText) {
-      const escapedHelp = label.helpText.replace(/;/g, ';;');
-      line += `;${escapedHelp}`;
+/**
+ * Handle finishing the session (clear workspace)
+ */
+async function handleBuilderFinish() {
+  await handleBuilderClear();
+}
+
+async function handleBuilderDownload() {
+  try {
+    if (builderState.labels.length === 0) {
+      showError(t('builder_empty') || 'No labels to download');
+      return;
     }
-    
-    return line;
-  });
-  
-  const content = lines.join('\n');
-  
-  // Determine filename based on prefix if all labels share same prefix
-  const prefixes = [...new Set(sortedLabels.map(l => l.prefix).filter(Boolean))];
-  let filename = 'custom.label.txt';
-  if (prefixes.length === 1) {
-    filename = `${prefixes[0]}.label.txt`;
+
+    const baseLabels = [...builderState.labels].sort((a, b) =>
+      a.labelId.localeCompare(b.labelId)
+    );
+    const exportLabels = await buildExportLabelsWithOptionalTranslations(baseLabels);
+    if (!exportLabels.length) return;
+
+    const exportGroups = buildExportGroups(exportLabels);
+    const downloadSignature = buildDownloadSignature(exportGroups);
+    if (
+      !builderState.isDirty &&
+      downloadSignature &&
+      downloadSignature === builderState.lastDownloadedSignature &&
+      !state.displaySettings.suppressRepeatedDownloadPrompt
+    ) {
+      const proceed = confirm(t('builder_download_same_confirm'));
+      if (!proceed) return;
+      const suppress = confirm(t('builder_download_same_disable_confirm'));
+      if (suppress) {
+        state.displaySettings.suppressRepeatedDownloadPrompt = true;
+        await saveDisplaySettingsToDb();
+      }
+    }
+
+    const directSaveActive = !!state.displaySettings.builderDirectSaveMode;
+    if (directSaveActive) {
+      if (builderState.directSaving) return;
+      await handleBuilderDirectSave(exportLabels).catch((err) => {
+        console.error('Direct Save failed:', err);
+        showError(err?.message || t('builder_direct_save_error'));
+      });
+      builderState.lastDownloadedSignature = downloadSignature;
+      builderState.isDirty = false;
+      return;
+    }
+
+    for (const group of exportGroups) {
+      const content = buildLabelFileContent(group.labels);
+      triggerFileDownload(content, group.filename);
+    }
+    builderState.lastDownloadedSignature = downloadSignature;
+    builderState.isDirty = false;
+    showSuccess(t('builder_download_complete') || `Downloaded ${exportLabels.length} labels`);
+  } catch (err) {
+    console.error('Builder export failed:', err);
+    showError(err?.message || t('builder_direct_save_error'));
   }
-  
-  // Download
+}
+
+function triggerFileDownload(content, filename) {
   const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = filename;
+  a.download = filename || 'custom.label.txt';
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
-  
-  showSuccess(t('builder_download_complete') || `Downloaded ${sortedLabels.length} labels as ${filename}`);
+}
+
+// =============================================
+// Export Modal Functions (Multi-language + ZIP)
+// =============================================
+
+function openExportModal() {
+  if (builderState.labels.length === 0) {
+    showError(t('builder_empty') || 'No labels to export');
+    return;
+  }
+
+  // Get dominant culture from labels
+  const cultureCounts = new Map();
+  builderState.labels.forEach((label) => {
+    const c = label.culture || 'en-US';
+    cultureCounts.set(c, (cultureCounts.get(c) || 0) + 1);
+  });
+  let dominantCulture = 'en-US';
+  let maxCount = 0;
+  cultureCounts.forEach((count, culture) => {
+    if (count > maxCount) {
+      maxCount = count;
+      dominantCulture = culture;
+    }
+  });
+
+  // Update modal UI
+  if (elements.exportSourceCulture) {
+    elements.exportSourceCulture.textContent = dominantCulture;
+  }
+  if (elements.exportLabelCount) {
+    elements.exportLabelCount.textContent = `${builderState.labels.length} labels`;
+  }
+
+  // Get prefix from labels or use default
+  let prefix = 'Labels';
+  const firstLabel = builderState.labels[0];
+  if (firstLabel?.prefix) {
+    prefix = firstLabel.prefix.replace(/^@/, '');
+  }
+  if (elements.exportFilePrefix) {
+    elements.exportFilePrefix.value = prefix;
+  }
+
+  // Setup language checkboxes
+  setupExportLanguageCheckboxes(dominantCulture);
+
+  // Show AI warning if not ready
+  const aiReady = isAiReadyAndEnabled();
+  elements.exportAiWarning?.classList.toggle('hidden', aiReady);
+
+  // Reset progress
+  elements.exportProgressSection?.classList.add('hidden');
+  if (elements.exportProgressFill) elements.exportProgressFill.style.width = '0%';
+  if (elements.exportProgressLabel) elements.exportProgressLabel.textContent = '';
+
+  // Enable generate button
+  if (elements.btnExportGenerate) {
+    elements.btnExportGenerate.disabled = false;
+    elements.btnExportGenerate.innerHTML = '🚀 <span data-i18n="btn_generate_export">Generate & Export</span>';
+  }
+
+  elements.exportModal?.classList.remove('hidden');
+}
+
+function closeExportModal() {
+  elements.exportModal?.classList.add('hidden');
+}
+
+function setupExportLanguageCheckboxes(sourceCulture) {
+  const container = elements.exportLanguageCheckboxes;
+  if (!container) return;
+
+  const aiReady = isAiReadyAndEnabled();
+  const checkboxes = container.querySelectorAll('input[type="checkbox"]');
+
+  checkboxes.forEach((checkbox) => {
+    const lang = checkbox.value;
+    const isSource = lang.toLowerCase() === sourceCulture.toLowerCase();
+
+    // Source language is always checked and disabled (will always export)
+    if (isSource) {
+      checkbox.checked = true;
+      checkbox.disabled = true;
+    } else {
+      // Other languages need AI to translate
+      checkbox.checked = false;
+      checkbox.disabled = !aiReady;
+    }
+  });
+}
+
+function getSelectedExportLanguages() {
+  const container = elements.exportLanguageCheckboxes;
+  if (!container) return [];
+
+  const checkboxes = container.querySelectorAll('input[type="checkbox"]:checked');
+  return Array.from(checkboxes).map((cb) => cb.value);
+}
+
+function updateExportProgress(progress, message) {
+  elements.exportProgressSection?.classList.remove('hidden');
+  if (elements.exportProgressFill) {
+    elements.exportProgressFill.style.width = `${progress}%`;
+  }
+  if (elements.exportProgressLabel) {
+    elements.exportProgressLabel.textContent = message || `${progress}%`;
+  }
+}
+
+async function handleExportGenerate() {
+  if (builderState.labels.length === 0) {
+    showError(t('builder_empty') || 'No labels to export');
+    return;
+  }
+
+  const selectedLanguages = getSelectedExportLanguages();
+  if (selectedLanguages.length === 0) {
+    showError(t('export_no_languages') || 'Select at least one language');
+    return;
+  }
+
+  const prefix = elements.exportFilePrefix?.value?.trim() || 'Labels';
+
+  // Disable button during export
+  if (elements.btnExportGenerate) {
+    elements.btnExportGenerate.disabled = true;
+    elements.btnExportGenerate.innerHTML = '⏳ <span>Processing...</span>';
+  }
+
+  try {
+    updateExportProgress(5, t('export_preparing') || 'Preparing labels...');
+
+    // Get source culture
+    const sourceCulture = elements.exportSourceCulture?.textContent || 'en-US';
+    
+    // Group existing labels by ID to easily check for translations
+    const labelsById = new Map();
+    builderState.labels.forEach(label => {
+      if (!labelsById.has(label.labelId)) {
+        labelsById.set(label.labelId, new Map());
+      }
+      labelsById.get(label.labelId).set(label.culture.toLowerCase(), label);
+    });
+
+    const uniqueIds = Array.from(labelsById.keys());
+    const allExportLabels = [];
+
+    // Find languages that need translation (not source and not already present)
+    const jobs = [];
+    
+    uniqueIds.forEach(labelId => {
+      const translations = labelsById.get(labelId);
+      const sourceLabel = translations.get(sourceCulture.toLowerCase()) || Array.from(translations.values())[0];
+      
+      selectedLanguages.forEach(targetCulture => {
+        const lowerTarget = targetCulture.toLowerCase();
+        
+        // If we already have this translation in the builder, use it
+        if (translations.has(lowerTarget)) {
+          allExportLabels.push({
+            ...translations.get(lowerTarget),
+            prefix
+          });
+        } else if (isAiReadyAndEnabled()) {
+          // Need AI translation
+          jobs.push({
+            key: `${labelId}::${sourceLabel.culture}::${targetCulture}`,
+            text: sourceLabel.text,
+            sourceLanguage: toWorkerLang(sourceLabel.culture),
+            targetLanguage: toWorkerLang(targetCulture),
+            targetCulture,
+            labelId: labelId,
+            sourceCulture: sourceLabel.culture
+          });
+        } else {
+          // AI not ready and no translation, skip or add empty
+          console.warn(`No translation for ${labelId} in ${targetCulture} and AI not ready.`);
+        }
+      });
+    });
+
+    // Run AI translations if needed
+    if (jobs.length > 0) {
+      updateExportProgress(10, t('export_translating') || 'Translating labels...');
+      
+      await initializeTranslatorWorker();
+      const result = await requestTranslations(jobs, (prog) => {
+        const pct = Math.round(10 + prog * 60);
+        updateExportProgress(pct, `${t('export_translating') || 'Translating'}... ${Math.round(prog * 100)}%`);
+      });
+
+      const translatedItems = result?.translations || [];
+      translatedItems.forEach(item => {
+        if (item.translatedText && !item.error) {
+          allExportLabels.push({
+            labelId: item.labelId,
+            culture: item.targetCulture,
+            text: item.translatedText,
+            prefix,
+            isAiTranslated: true
+          });
+        }
+      });
+    }
+
+    updateExportProgress(80, t('export_generating') || 'Generating files...');
+
+    // Group final labels by culture for output
+    const groups = new Map();
+    allExportLabels.forEach(label => {
+      if (!groups.has(label.culture)) {
+        groups.set(label.culture, []);
+      }
+      groups.get(label.culture).push(label);
+    });
+
+    // Sort each group
+    groups.forEach(labels => {
+      labels.sort((a, b) => a.labelId.localeCompare(b.labelId));
+    });
+
+    updateExportProgress(90, t('export_packaging') || 'Packaging files...');
+
+    // If single language, download directly; otherwise ZIP
+    if (groups.size === 1) {
+      const [culture, labels] = [...groups.entries()][0];
+      const content = buildLabelFileContent(labels);
+      const filename = `${prefix}.${culture}.label.txt`;
+      triggerFileDownload(content, filename);
+      updateExportProgress(100, t('export_complete') || 'Export complete!');
+      showSuccess(t('export_success_single', { count: labels.length, culture }) || `Exported ${labels.length} labels (${culture})`);
+    } else {
+      // Multiple languages - create ZIP
+      if (typeof JSZip === 'undefined') {
+        showError('JSZip library not loaded');
+        if (elements.btnExportGenerate) {
+          elements.btnExportGenerate.disabled = false;
+          elements.btnExportGenerate.innerHTML = '🚀 <span>Generate & Export</span>';
+        }
+        return;
+      }
+
+      const zip = new JSZip();
+      groups.forEach((labels, culture) => {
+        const content = buildLabelFileContent(labels);
+        const filename = `${prefix}.${culture}.label.txt`;
+        zip.file(filename, content);
+      });
+
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${prefix}_Labels_Export.zip`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      updateExportProgress(100, t('export_complete') || 'Export complete!');
+      const totalLabelsCount = [...groups.values()].reduce((sum, arr) => sum + arr.length, 0);
+      showSuccess(t('export_success_zip', { count: totalLabelsCount, files: groups.size }) || `Exported ${totalLabelsCount} labels in ${groups.size} files`);
+    }
+
+    // Mark as not dirty and close modal after a short delay
+    builderState.isDirty = false;
+    setTimeout(closeExportModal, 1500);
+
+  } catch (err) {
+    console.error('Builder export failed:', err);
+    showError(err?.message || 'Export failed');
+  } finally {
+    if (elements.btnExportGenerate) {
+      elements.btnExportGenerate.disabled = false;
+      elements.btnExportGenerate.innerHTML = '🚀 <span data-i18n="btn_generate_export">Generate & Export</span>';
+    }
+  }
+}
+
+function parseCultureInputList(rawTargets) {
+  return [...new Set(
+    String(rawTargets || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+  )];
+}
+
+function buildExportGroups(labels) {
+  const groups = new Map();
+  labels.forEach((label) => {
+    const prefix = label.prefix || 'custom';
+    const culture = label.culture || 'en-US';
+    const key = `${prefix}|||${culture}`;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        prefix,
+        culture,
+        filename: `${prefix}.${culture}.label.txt`,
+        labels: []
+      });
+    }
+    groups.get(key).labels.push(label);
+  });
+
+  return [...groups.values()].map((group) => ({
+    ...group,
+    labels: [...group.labels].sort((a, b) => a.labelId.localeCompare(b.labelId))
+  }));
+}
+
+function buildDownloadSignature(groups) {
+  if (!Array.isArray(groups) || groups.length === 0) return '';
+  const payload = groups.map((group) => ({
+    file: group.filename,
+    content: buildLabelFileContent(group.labels)
+  }));
+  return JSON.stringify(payload);
+}
+
+async function buildExportLabelsWithOptionalTranslations(baseLabels) {
+  const shouldTranslate = confirm(t('builder_export_translate_prompt'));
+  if (!shouldTranslate) return baseLabels;
+
+  if (!isAiReadyAndEnabled()) {
+    showInfo(t('ai_translation_requires_ready'));
+    return baseLabels;
+  }
+
+  const defaultTargets = state.ai.targetLanguage || 'en-US';
+  const requested = prompt(t('builder_export_targets_prompt'), defaultTargets);
+  if (requested === null) return baseLabels;
+
+  const targetCultures = parseCultureInputList(requested);
+  if (!targetCultures.length) {
+    showInfo(t('builder_export_no_targets'));
+    return baseLabels;
+  }
+
+  const validSourceLabels = baseLabels.filter((label) => label.labelId && label.text && label.culture);
+  if (!validSourceLabels.length) {
+    showInfo(t('builder_export_no_pairs'));
+    return baseLabels;
+  }
+
+  const jobs = [];
+  validSourceLabels.forEach((label) => {
+    targetCultures.forEach((targetCulture) => {
+      if (targetCulture !== label.culture) {
+        jobs.push({
+          key: `${label.id || label.labelId}::${label.culture}::${targetCulture}`,
+          text: label.text,
+          sourceLanguage: toWorkerLang(label.culture),
+          targetLanguage: toWorkerLang(targetCulture),
+          targetCulture,
+          labelId: label.labelId,
+          sourceCulture: label.culture
+        });
+      }
+    });
+  });
+
+  if (!jobs.length) {
+    showInfo(t('builder_export_no_pairs'));
+    return baseLabels;
+  }
+
+  builderState.translating = true;
+  updateBuilderTranslateProgress(0, t('builder_export_translating'));
+  setAiTranslationHeaderStatus(true, t('builder_export_translating'));
+  try {
+    await initializeTranslatorWorker();
+    const result = await requestTranslations(jobs);
+    const translatedItems = result?.translations || [];
+    const sourceByKey = new Map(
+      validSourceLabels.map((label) => [`${label.labelId}::${label.culture}`, label])
+    );
+
+    const merged = [...baseLabels];
+    translatedItems.forEach((item) => {
+      const source = sourceByKey.get(`${item.labelId}::${item.sourceCulture}`);
+      if (!source || !item.translatedText) return;
+      merged.push({
+        ...source,
+        id: undefined,
+        culture: item.targetCulture,
+        text: item.translatedText,
+        isAiTranslated: true,
+        source: `AI Export (${source.culture} -> ${item.targetCulture})`
+      });
+    });
+
+    const deduped = new Map();
+    merged.forEach((label) => {
+      const key = `${label.labelId}::${label.culture}`;
+      deduped.set(key, label);
+    });
+
+    state.ai.targetLanguage = targetCultures[0] || state.ai.targetLanguage;
+    await saveAiSettingsToDb();
+    showSuccess(t('builder_export_translation_done', { count: translatedItems.length }));
+    return [...deduped.values()];
+  } catch (err) {
+    console.error('Export translation failed:', err);
+    showError(err?.message || t('ai_translation_error'));
+    return baseLabels;
+  } finally {
+    builderState.translating = false;
+    updateBuilderTranslateProgress(0, t('ai_translation_idle'));
+    setAiTranslationHeaderStatus(false, t('ai_translation_idle'));
+  }
+}
+
+function normalizeLabelLineValue(value) {
+  return String(value || '')
+    .replace(/\r?\n/g, ' ')
+    .replace(/;/g, ';;');
+}
+
+function buildLabelFileContent(labels) {
+  const lines = [];
+  labels.forEach((label) => {
+    lines.push(`${label.labelId}=${normalizeLabelLineValue(label.text)}`);
+    if (label.helpText) {
+      lines.push(` ;${normalizeLabelLineValue(label.helpText)}`);
+    }
+  });
+  return lines.join('\n');
+}
+
+function inferSourceModel(label) {
+  if (label?.sourceModel) return label.sourceModel;
+  const source = String(label?.source || '');
+  const parts = source.split('/');
+  if (parts.length >= 2 && parts[0] && source !== 'Search Result') {
+    return parts[0];
+  }
+  return '';
+}
+
+function parseLabelFileContent(content) {
+  const entries = [];
+  const lines = String(content || '').split(/\r?\n/);
+  let current = null;
+
+  for (const rawLine of lines) {
+    const line = rawLine ?? '';
+    if (!line) continue;
+
+    if (line.startsWith(' ;')) {
+      if (current) {
+        const helpPart = line.slice(2).trim();
+        if (helpPart) {
+          current.helpText = current.helpText ? `${current.helpText} ${helpPart}` : helpPart;
+        }
+      }
+      continue;
+    }
+
+    const equalsIndex = line.indexOf('=');
+    if (equalsIndex > 0 && line.charCodeAt(0) !== 32) {
+      if (current) entries.push(current);
+      current = {
+        labelId: line.slice(0, equalsIndex).trim(),
+        text: line.slice(equalsIndex + 1),
+        helpText: ''
+      };
+      continue;
+    }
+
+    if (current) {
+      entries.push(current);
+      current = null;
+    }
+  }
+
+  if (current) {
+    entries.push(current);
+  }
+
+  return entries;
+}
+
+function groupBuilderLabelsByTarget(labels) {
+  const grouped = new Map();
+  labels.forEach((label) => {
+    const sourceModel = inferSourceModel(label);
+    const key = `${label.prefix || ''}|||${label.culture || ''}|||${sourceModel}`;
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        key,
+        prefix: label.prefix || '',
+        culture: label.culture || '',
+        sourceModel,
+        labels: []
+      });
+    }
+    grouped.get(key).labels.push(label);
+  });
+  return [...grouped.values()];
+}
+
+function findDirectSaveTargets(prefix, culture, sourceModel = '') {
+  const matches = [];
+  state.discoveryData.forEach((model) => {
+    if (sourceModel && model.model !== sourceModel) return;
+    model.cultures.forEach((cultureEntry) => {
+      if (cultureEntry.culture !== culture) return;
+      cultureEntry.files.forEach((file) => {
+        if (file.prefix === prefix) {
+          matches.push({
+            model: model.model,
+            culture: cultureEntry.culture,
+            name: file.name,
+            handle: file.handle
+          });
+        }
+      });
+    });
+  });
+  return matches;
+}
+
+async function createDirectSaveTarget(prefix, culture, sourceModel) {
+  if (!sourceModel) return null;
+  const modelEntry = state.discoveryData.find((model) => model.model === sourceModel);
+  if (!modelEntry?.labelResourcesHandle) return null;
+
+  const permissionOk = await fileAccess.requestPermission(modelEntry.labelResourcesHandle, 'readwrite');
+  if (!permissionOk) {
+    throw new Error(t('builder_direct_save_permission_denied'));
+  }
+
+  let cultureHandle;
+  try {
+    cultureHandle = await modelEntry.labelResourcesHandle.getDirectoryHandle(culture);
+  } catch (err) {
+    cultureHandle = await modelEntry.labelResourcesHandle.getDirectoryHandle(culture, { create: true });
+  }
+
+  const fileName = `${prefix}.${culture}.label.txt`;
+  const fileHandle = await cultureHandle.getFileHandle(fileName, { create: true });
+
+  let cultureEntry = modelEntry.cultures.find((entry) => entry.culture === culture);
+  if (!cultureEntry) {
+    cultureEntry = { culture, handle: cultureHandle, files: [] };
+    modelEntry.cultures.push(cultureEntry);
+  }
+  if (!cultureEntry.files.some((file) => file.name === fileName)) {
+    cultureEntry.files.push({ name: fileName, handle: fileHandle, prefix });
+  }
+  modelEntry.fileCount = modelEntry.cultures.reduce((sum, entry) => sum + entry.files.length, 0);
+
+  return {
+    model: sourceModel,
+    culture,
+    name: fileName,
+    handle: fileHandle
+  };
+}
+
+async function resolveDirectSaveTarget(group) {
+  let matches = findDirectSaveTargets(group.prefix, group.culture, group.sourceModel);
+
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) {
+    throw new Error(t('builder_direct_save_ambiguous_target', {
+      prefix: group.prefix,
+      culture: group.culture,
+      count: matches.length
+    }));
+  }
+
+  if (!group.sourceModel) {
+    matches = findDirectSaveTargets(group.prefix, group.culture);
+    if (matches.length === 1) return matches[0];
+    if (matches.length > 1) {
+      throw new Error(t('builder_direct_save_ambiguous_target', {
+        prefix: group.prefix,
+        culture: group.culture,
+        count: matches.length
+      }));
+    }
+    throw new Error(t('builder_direct_save_target_not_found', {
+      prefix: group.prefix,
+      culture: group.culture
+    }));
+  }
+
+  const created = await createDirectSaveTarget(group.prefix, group.culture, group.sourceModel);
+  if (created) return created;
+
+  throw new Error(t('builder_direct_save_target_not_found', {
+    prefix: group.prefix,
+    culture: group.culture
+  }));
+}
+
+async function handleBuilderDirectSave(sortedLabels) {
+  builderState.directSaving = true;
+  try {
+    const invalid = sortedLabels.filter((label) => !label.prefix || !label.culture);
+    if (invalid.length > 0) {
+      throw new Error(t('builder_direct_save_missing_prefix'));
+    }
+
+    const grouped = groupBuilderLabelsByTarget(sortedLabels);
+    const proceed = confirm(t('builder_direct_save_confirm', {
+      files: grouped.length,
+      labels: sortedLabels.length
+    }));
+    if (!proceed) return;
+
+    showInfo(t('builder_direct_save_preflight', {
+      files: grouped.length,
+      labels: sortedLabels.length
+    }));
+
+    let updatedFiles = 0;
+    let appendedLabels = 0;
+    let replacedLabels = 0;
+    let skippedLabels = 0;
+
+    for (const group of grouped) {
+      const target = await resolveDirectSaveTarget(group);
+      const permissionOk = await fileAccess.requestPermission(target.handle, 'readwrite');
+      if (!permissionOk) {
+        throw new Error(t('builder_direct_save_permission_denied'));
+      }
+
+      const existingContent = await fileAccess.readFileAsText(target.handle);
+      const entries = parseLabelFileContent(existingContent);
+      const indexById = new Map(entries.map((entry, index) => [entry.labelId, index]));
+
+      for (const label of group.labels) {
+        const existingIdx = indexById.get(label.labelId);
+        const nextValue = {
+          labelId: label.labelId,
+          text: label.text || '',
+          helpText: label.helpText || ''
+        };
+
+        if (Number.isInteger(existingIdx)) {
+          const current = entries[existingIdx];
+          if (current.text === nextValue.text && (current.helpText || '') === nextValue.helpText) {
+            skippedLabels++;
+            continue;
+          }
+          entries[existingIdx] = nextValue;
+          replacedLabels++;
+        } else {
+          indexById.set(nextValue.labelId, entries.length);
+          entries.push(nextValue);
+          appendedLabels++;
+        }
+      }
+
+      await fileAccess.writeFileAsText(target.handle, buildLabelFileContent(entries));
+      updatedFiles++;
+    }
+
+    showSuccess(t('builder_direct_save_complete', {
+      files: updatedFiles,
+      added: appendedLabels,
+      updated: replacedLabels,
+      skipped: skippedLabels
+    }));
+  } finally {
+    builderState.directSaving = false;
+  }
 }
 
 function getBuilderTargetLanguages() {
@@ -4461,6 +5323,7 @@ function requestTranslations(jobs) {
 }
 
 async function applyTranslatedLabel(baseLabel, targetCulture, translatedText) {
+  pushBuilderHistorySnapshot();
   const existing = builderState.labels.find(
     (label) => label.labelId === baseLabel.labelId && label.culture === targetCulture
   );
@@ -4477,6 +5340,7 @@ async function applyTranslatedLabel(baseLabel, targetCulture, translatedText) {
       isAiTranslated: true,
       translatedFrom: baseLabel.culture
     });
+    markBuilderDirty();
     return;
   }
 
@@ -4493,6 +5357,7 @@ async function applyTranslatedLabel(baseLabel, targetCulture, translatedText) {
   const id = await db.addBuilderLabel(entry);
   entry.id = id;
   builderState.labels.push(entry);
+  markBuilderDirty();
 }
 
 async function handleBuilderAutoTranslate() {
@@ -4592,46 +5457,113 @@ const extractorState = {
   candidates: [],
   worker: null,
   running: false,
-  sessionId: null
+  sessionId: null,
+  projectModel: ''
 };
 
-function createExtractorSessionId() {
-  return `extractor_${Date.now()}`;
+function createExtractorSessionId(modelName = '') {
+  const modelPart = (modelName || 'generic').replace(/[^A-Za-z0-9_-]/g, '_');
+  return `extractor_${modelPart}_${Date.now()}`;
 }
 
-function openExtractorModal() {
+function openExtractorWorkspace() {
   closeToolsModal();
   if (!extractorState.sessionId) {
-    extractorState.sessionId = createExtractorSessionId();
+    extractorState.sessionId = createExtractorSessionId(extractorState.projectModel);
   }
-  elements.extractorModal?.classList.remove('hidden');
+  elements.extractorWorkspace?.classList.remove('hidden');
+  renderExtractorFileTree();
   renderExtractorSummary();
+  renderExtractorResults();
+  updateExtractorStatusBadge();
+  tryAutoResumeExtractorSession();
 }
 
-function closeExtractorModal() {
-  elements.extractorModal?.classList.add('hidden');
+function closeExtractorWorkspace() {
+  // Auto-save if enabled
+  if (elements.extractorAutoSave?.checked && extractorState.candidates.length > 0) {
+    saveExtractorSession().catch(console.error);
+  }
+  elements.extractorWorkspace?.classList.add('hidden');
 }
 
-function renderExtractorSummary() {
-  if (!elements.extractorSummary) return;
+function updateExtractorStatusBadge(status = 'ready') {
+  if (!elements.extractorStatusBadge) return;
+  elements.extractorStatusBadge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+  elements.extractorStatusBadge.className = 'extractor-status-badge ' + status;
+}
 
-  const files = extractorState.files.length;
-  const candidates = extractorState.candidates.filter((item) => item.status === 'pending').length;
-  const confirmed = extractorState.candidates.filter((item) => item.status === 'confirmed').length;
-  const ignored = extractorState.candidates.filter((item) => item.status === 'ignored').length;
+function renderExtractorFileTree() {
+  if (!elements.extractorFileTree) return;
 
-  if (files === 0 && extractorState.candidates.length === 0) {
-    elements.extractorSummary.classList.add('hidden');
+  if (extractorState.files.length === 0) {
+    elements.extractorFileTree.innerHTML = `
+      <div class="extractor-empty-files">
+        <span class="empty-icon">📂</span>
+        <p data-i18n="extractor_no_files">No files loaded</p>
+        <p class="hint" data-i18n="extractor_select_hint">Select a .rnrproj file or individual .xml/.xpp files to begin.</p>
+      </div>`;
+    elements.extractorProjectInfo?.classList.add('hidden');
+    if (elements.extractorFilesCount) elements.extractorFilesCount.textContent = '0 files';
+    if (elements.extractorFilesScanned) elements.extractorFilesScanned.textContent = '0 scanned';
     return;
   }
 
-  elements.extractorSummary.classList.remove('hidden');
-  elements.extractorSummary.textContent = t('extractor_summary', {
-    files,
-    candidates,
-    confirmed,
-    ignored
-  });
+  // Show project info if available
+  if (extractorState.projectName) {
+    elements.extractorProjectInfo?.classList.remove('hidden');
+    if (elements.extractorProjectName) elements.extractorProjectName.textContent = extractorState.projectName;
+    if (elements.extractorProjectModel) elements.extractorProjectModel.textContent = extractorState.projectModel || '';
+  } else {
+    elements.extractorProjectInfo?.classList.add('hidden');
+  }
+
+  // Build file list HTML
+  const fileListHtml = extractorState.files.map((file, index) => {
+    const isScanned = file.scanned;
+    const candidatesFound = extractorState.candidates.filter(
+      c => c.contexts?.some(ctx => ctx.file === file.name)
+    ).length;
+    const icon = file.name.endsWith('.xml') ? '📄' : file.name.endsWith('.xpp') ? '📝' : '📁';
+    return `
+      <div class="extractor-file-item ${isScanned ? 'scanned' : ''}" data-index="${index}">
+        <span class="file-icon">${icon}</span>
+        <span class="file-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name.split('/').pop())}</span>
+        ${candidatesFound > 0 ? `<span class="file-count">${candidatesFound}</span>` : ''}
+      </div>`;
+  }).join('');
+
+  elements.extractorFileTree.innerHTML = fileListHtml;
+
+  // Update stats
+  const scannedCount = extractorState.files.filter(f => f.scanned).length;
+  if (elements.extractorFilesCount) elements.extractorFilesCount.textContent = `${extractorState.files.length} files`;
+  if (elements.extractorFilesScanned) elements.extractorFilesScanned.textContent = `${scannedCount} scanned`;
+}
+
+function renderExtractorSummary() {
+  const candidates = extractorState.candidates.filter((item) => item.status === 'pending').length;
+  const confirmed = extractorState.candidates.filter((item) => item.status === 'confirmed' || item.status === 'reused').length;
+  const ignored = extractorState.candidates.filter((item) => item.status === 'ignored').length;
+  const total = extractorState.candidates.length;
+
+  if (total === 0) {
+    elements.extractorSummary?.classList.add('hidden');
+    return;
+  }
+
+  elements.extractorSummary?.classList.remove('hidden');
+  if (elements.extractorTotalFound) elements.extractorTotalFound.textContent = total;
+  if (elements.extractorResolvedCount) elements.extractorResolvedCount.textContent = confirmed;
+  if (elements.extractorIgnoredCount) elements.extractorIgnoredCount.textContent = ignored;
+
+  // Enable/disable buttons based on state
+  if (elements.btnExtractorAddAll) {
+    elements.btnExtractorAddAll.disabled = confirmed === 0;
+  }
+  if (elements.btnExtractorApply) {
+    elements.btnExtractorApply.disabled = confirmed === 0;
+  }
 }
 
 function updateExtractorProgress(progress = 0, label = '') {
@@ -4644,6 +5576,198 @@ function updateExtractorProgress(progress = 0, label = '') {
   elements.extractorProgress?.classList.toggle('hidden', !extractorState.running && progress === 0);
 }
 
+function normalizeFsPath(path) {
+  return String(path || '')
+    .replace(/\\/g, '/')
+    .replace(/\/+/g, '/')
+    .replace(/^\/+|\/+$/g, '');
+}
+
+function parseRnrprojManifest(content) {
+  const text = String(content || '');
+  const modelMatch = text.match(/<Model>\s*([^<]+?)\s*<\/Model>/i);
+  const includeRegex = /<Content[^>]*Include=["']([^"']+)["'][^>]*>/gi;
+  const includes = [];
+  const seen = new Set();
+  let match;
+
+  while ((match = includeRegex.exec(text)) !== null) {
+    const includePath = normalizeFsPath(match[1]);
+    if (!includePath || seen.has(includePath)) continue;
+    seen.add(includePath);
+    includes.push(includePath);
+  }
+
+  return {
+    model: modelMatch?.[1]?.trim() || '',
+    includes
+  };
+}
+
+async function resolveFileFromRoot(relativePath) {
+  if (!state.directoryHandle) return null;
+
+  const normalized = normalizeFsPath(relativePath);
+  if (!normalized) return null;
+
+  const segments = normalized.split('/').filter(Boolean);
+  if (segments.length === 0) return null;
+
+  let currentDir = state.directoryHandle;
+  for (let i = 0; i < segments.length - 1; i++) {
+    currentDir = await currentDir.getDirectoryHandle(segments[i]);
+  }
+
+  const fileHandle = await currentDir.getFileHandle(segments[segments.length - 1]);
+  const content = await fileAccess.readFileAsText(fileHandle);
+  return {
+    name: normalized,
+    content
+  };
+}
+
+async function resolveFileFromCandidates(paths) {
+  for (const candidate of paths) {
+    try {
+      const resolved = await resolveFileFromRoot(candidate);
+      if (resolved) return resolved;
+    } catch (err) {
+      // Try next candidate path
+    }
+  }
+  return null;
+}
+
+async function loadProjectFirstFiles(manifest) {
+  const files = [];
+  let missingCount = 0;
+  const model = manifest?.model || '';
+  const includes = (manifest?.includes || []).filter((includePath) => {
+    const lower = includePath.toLowerCase();
+    return lower.endsWith('.xml') || lower.endsWith('.xpp');
+  });
+
+  for (const includePath of includes) {
+    const candidates = [];
+    const normalizedInclude = normalizeFsPath(includePath);
+    if (model) {
+      candidates.push(`${model}/${normalizedInclude}`);
+      candidates.push(`PackagesLocalDirectory/${model}/${normalizedInclude}`);
+    }
+    candidates.push(normalizedInclude);
+
+    const resolved = await resolveFileFromCandidates(candidates);
+    if (!resolved) {
+      missingCount++;
+      continue;
+    }
+
+    files.push({
+      name: resolved.name,
+      content: resolved.content,
+      sourceModel: model || '',
+      sourcePath: normalizedInclude
+    });
+  }
+
+  return { files, missingCount };
+}
+
+function detectSemanticSourceLanguage(text) {
+  const sample = (text || '').toLowerCase();
+  if (!sample) return 'en';
+
+  if (/[ãõáàâéêíóôúç]/.test(sample) || /\b( de | do | da | para | pedido | cliente | status )\b/.test(` ${sample} `)) {
+    return 'pt';
+  }
+  if (/[ñ]/.test(sample) || /\b( el | la | estado | pedido | cliente )\b/.test(` ${sample} `)) {
+    return 'es';
+  }
+  if (/[äöüß]/.test(sample)) {
+    return 'de';
+  }
+  if (/[àâçéèêîôû]/.test(sample)) {
+    return 'fr';
+  }
+  return 'en';
+}
+
+function toSemanticLabelId(text) {
+  return String(text || '')
+    .replace(/[^A-Za-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 5)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join('');
+}
+
+function derivePrefixFromModelName(modelName) {
+  const clean = String(modelName || '').replace(/[^A-Za-z0-9]/g, '');
+  if (!clean) return '';
+  return clean.slice(0, 3).toUpperCase();
+}
+
+async function translateExtractorTextsForIds(candidates) {
+  if (!isAiReadyAndEnabled() || !state.ai.semanticIdSuggestion || candidates.length === 0) {
+    return candidates.map((item) => item.text || '');
+  }
+
+  return new Promise((resolve) => {
+    const worker = new Worker('./workers/translator.worker.js', { type: 'module' });
+    let finished = false;
+
+    function cleanup(result) {
+      if (finished) return;
+      finished = true;
+      try {
+        worker.terminate();
+      } catch (err) {}
+      resolve(result);
+    }
+
+    worker.onmessage = (event) => {
+      const { type, payload } = event.data || {};
+
+      if (type === 'INIT_PROGRESS') {
+        updateExtractorProgress(100, payload?.message || t('extractor_ai_suggestions'));
+        return;
+      }
+
+      if (type === 'READY') {
+        const jobs = candidates.map((item, index) => ({
+          key: String(index),
+          labelId: `semantic-${index}`,
+          text: item.text || '',
+          sourceLanguage: detectSemanticSourceLanguage(item.text),
+          targetLanguage: 'en',
+          sourceCulture: 'auto',
+          targetCulture: 'en-US'
+        }));
+        worker.postMessage({ type: 'TRANSLATE', payload: { jobs } });
+        return;
+      }
+
+      if (type === 'TRANSLATE_COMPLETE') {
+        const translations = payload?.translations || [];
+        const byKey = new Map(translations.map((item) => [item.key, item.translatedText]));
+        cleanup(candidates.map((item, index) => byKey.get(String(index)) || item.text || ''));
+        return;
+      }
+
+      if (type === 'ERROR') {
+        cleanup(candidates.map((item) => item.text || ''));
+      }
+    };
+
+    worker.onerror = () => {
+      cleanup(candidates.map((item) => item.text || ''));
+    };
+
+    worker.postMessage({ type: 'INIT' });
+  });
+}
+
 async function handleExtractorSelectFiles() {
   const input = document.createElement('input');
   input.type = 'file';
@@ -4654,51 +5778,96 @@ async function handleExtractorSelectFiles() {
     const files = [...(input.files || [])];
     if (files.length === 0) return;
 
-    const loaded = [];
+    const manuallySelected = [];
+    const manifests = [];
+
     for (const file of files) {
       const content = await file.text();
-      loaded.push({
-        name: file.name,
-        content
+      const lower = file.name.toLowerCase();
+
+      if (lower.endsWith('.rnrproj')) {
+        manifests.push({
+          fileName: file.name,
+          ...parseRnrprojManifest(content)
+        });
+        continue;
+      }
+
+      manuallySelected.push({
+        name: normalizeFsPath(file.name),
+        content,
+        sourceModel: ''
       });
     }
 
+    const loadedMap = new Map();
+    manuallySelected.forEach((item) => {
+      loadedMap.set(item.name.toLowerCase(), item);
+    });
+
+    let totalMissing = 0;
+    let detectedModel = '';
+    for (const manifest of manifests) {
+      if (manifest.model && !detectedModel) {
+        detectedModel = manifest.model;
+      }
+      const projectLoad = await loadProjectFirstFiles(manifest);
+      totalMissing += projectLoad.missingCount;
+      projectLoad.files.forEach((item) => {
+        loadedMap.set(item.name.toLowerCase(), item);
+      });
+    }
+
+    const loaded = [...loadedMap.values()];
+
     extractorState.files = loaded;
+    extractorState.projectModel = detectedModel || '';
     extractorState.candidates = [];
-    extractorState.sessionId = createExtractorSessionId();
+    extractorState.sessionId = createExtractorSessionId(extractorState.projectModel);
     elements.extractorResults?.classList.add('hidden');
     elements.btnExtractorAddAll?.classList.add('hidden');
     renderExtractorSummary();
-    showSuccess(t('extractor_files_loaded', { count: loaded.length }));
+
+    if (loaded.length === 0) {
+      showError(t('extractor_select_files_error'));
+      return;
+    }
+
+    if (manifests.length > 0) {
+      showSuccess(t('extractor_project_loaded', { count: loaded.length, missing: totalMissing }));
+    } else {
+      showSuccess(t('extractor_files_loaded', { count: loaded.length }));
+    }
   };
 
   input.click();
 }
 
-function buildSuggestedIds(candidates) {
+async function buildSuggestedIds(candidates) {
   const existing = new Set(builderState.labels.map((item) => `${item.labelId}::${item.culture}`));
   const usedIds = new Set();
-  const prefix = builderState.labels.find((item) => item.prefix)?.prefix || 'LBL';
+  const prefix = builderState.labels.find((item) => item.prefix)?.prefix || derivePrefixFromModelName(extractorState.projectModel) || 'LBL';
   let sequence = 1;
+  const culture = elements.builderCultureSelect?.value || 'en-US';
+  const semanticTexts = await translateExtractorTextsForIds(candidates);
+  const existingMatches = await Promise.all(
+    candidates.map((item) => db.findLabelsByExactText(item.text, 5).catch(() => []))
+  );
 
-  return candidates.map((item) => {
-    let suggestion = '';
-    if (isAiReadyAndEnabled() && state.ai.semanticIdSuggestion) {
-      suggestion = item.text
-        .replace(/[^A-Za-z0-9\s]/g, ' ')
-        .split(/\s+/)
-        .filter(Boolean)
-        .slice(0, 4)
-        .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-        .join('');
-    }
+  return candidates.map((item, index) => {
+    const matches = existingMatches[index] || [];
+    const reuse = matches.find((label) => label.culture === culture) || matches[0] || null;
+    let suggestion = toSemanticLabelId(semanticTexts[index] || item.text);
 
     if (!suggestion || suggestion.length < 3) {
       suggestion = `${prefix}_${String(sequence).padStart(3, '0')}`;
       sequence++;
     }
 
-    const culture = elements.builderCultureSelect?.value || 'en-US';
+    if (/^[0-9]/.test(suggestion)) {
+      suggestion = `${prefix}_${suggestion}`;
+    }
+
     while (usedIds.has(suggestion) || existing.has(`${suggestion}::${culture}`)) {
       suggestion = `${suggestion}1`;
     }
@@ -4707,7 +5876,18 @@ function buildSuggestedIds(candidates) {
     return {
       ...item,
       suggestedId: suggestion,
-      status: 'pending'
+      status: 'pending',
+      prefix,
+      sourceModel: item.sourceModel || item.contexts?.[0]?.model || extractorState.projectModel || '',
+      existingLabel: reuse
+        ? {
+            fullId: reuse.fullId || `@${reuse.prefix}:${reuse.labelId}`,
+            labelId: reuse.labelId,
+            prefix: reuse.prefix,
+            culture: reuse.culture,
+            text: reuse.text
+          }
+        : null
     };
   });
 }
@@ -4717,34 +5897,57 @@ function renderExtractorResults() {
 
   const rows = extractorState.candidates;
   if (rows.length === 0) {
-    elements.extractorResults.classList.add('hidden');
-    elements.btnExtractorAddAll?.classList.add('hidden');
+    elements.extractorResults.innerHTML = `
+      <div class="extractor-empty-results">
+        <span class="empty-icon">🔍</span>
+        <p data-i18n="extractor_no_candidates">No candidates yet</p>
+        <p class="hint" data-i18n="extractor_scan_hint">Load files and click Scan to find hardcoded strings.</p>
+      </div>`;
+    if (elements.btnExtractorAddAll) elements.btnExtractorAddAll.disabled = true;
+    if (elements.btnExtractorApply) elements.btnExtractorApply.disabled = true;
     return;
   }
 
-  elements.extractorResults.classList.remove('hidden');
-  elements.btnExtractorAddAll?.classList.toggle('hidden', !rows.some((item) => item.status === 'pending'));
+  const hasPending = rows.some((item) => item.status === 'pending');
+  const hasConfirmed = rows.some((item) => item.status === 'confirmed' || item.status === 'reused');
+
+  if (elements.btnExtractorAddAll) elements.btnExtractorAddAll.disabled = !hasPending;
+  if (elements.btnExtractorApply) elements.btnExtractorApply.disabled = !hasConfirmed;
 
   elements.extractorResults.innerHTML = rows.map((item, index) => `
-    <div class="extractor-row extractor-${item.status}">
-      <div class="extractor-main">
-        <div class="extractor-text">${escapeHtml(item.text)}</div>
-        <div class="extractor-context">${escapeHtml((item.contexts || []).map((ctx) => `${ctx.file}:${ctx.line}`).join(', '))}</div>
+    <div class="extractor-candidate ${item.status}">
+      <div class="extractor-candidate-main">
+        <div class="extractor-candidate-text">${escapeHtml(item.text)}</div>
+        ${item.existingLabel ? `<div class="extractor-candidate-existing">💡 ${escapeHtml(item.existingLabel.fullId)}</div>` : ''}
+        <div class="extractor-candidate-context">${escapeHtml((item.contexts || []).slice(0, 2).map((ctx) => `${ctx.file}:${ctx.line}`).join(' • '))}</div>
+        <input class="extractor-id-input form-input" data-index="${index}" placeholder="Label ID" value="${escapeAttr(item.suggestedId || '')}" ${item.status !== 'pending' ? 'disabled' : ''}>
       </div>
-      <input class="extractor-id-input" data-index="${index}" value="${escapeAttr(item.suggestedId || '')}" ${item.status !== 'pending' ? 'disabled' : ''}>
-      <div class="extractor-row-actions">
-        <button class="btn btn-outline btn-sm extractor-confirm" data-index="${index}" ${item.status !== 'pending' ? 'disabled' : ''}>${t('extractor_confirm_new')}</button>
-        <button class="btn btn-outline btn-sm extractor-ignore" data-index="${index}" ${item.status !== 'pending' ? 'disabled' : ''}>${t('extractor_ignore')}</button>
+      <div class="extractor-candidate-actions">
+        ${item.existingLabel ? `<button class="btn btn-xs btn-outline extractor-use-existing" data-index="${index}" ${item.status !== 'pending' ? 'disabled' : ''}>Use</button>` : ''}
+        <button class="btn btn-xs btn-success extractor-confirm" data-index="${index}" ${item.status !== 'pending' ? 'disabled' : ''}>✓</button>
+        <button class="btn btn-xs btn-outline extractor-ignore" data-index="${index}" ${item.status !== 'pending' ? 'disabled' : ''}>✕</button>
       </div>
     </div>
   `).join('');
 
+  // Attach event listeners
   elements.extractorResults.querySelectorAll('.extractor-id-input').forEach((input) => {
     input.addEventListener('input', (event) => {
       const idx = parseInt(event.currentTarget.dataset.index, 10);
       if (Number.isFinite(idx) && extractorState.candidates[idx]) {
         extractorState.candidates[idx].suggestedId = event.currentTarget.value.trim();
+        // Auto-save on change
+        if (elements.extractorAutoSave?.checked) {
+          saveExtractorSession().catch(() => {});
+        }
       }
+    });
+  });
+
+  elements.extractorResults.querySelectorAll('.extractor-use-existing').forEach((button) => {
+    button.addEventListener('click', () => {
+      const idx = parseInt(button.dataset.index, 10);
+      useExistingExtractorCandidate(idx);
     });
   });
 
@@ -4780,12 +5983,19 @@ async function confirmExtractorCandidate(index) {
     text: candidate.text,
     helpText: '',
     culture: elements.builderCultureSelect?.value || 'en-US',
-    prefix: builderState.labels.find((item) => item.prefix)?.prefix || 'LBL',
-    model: 'Extractor',
-    fileName: candidate.contexts?.[0]?.file || 'scan'
+    prefix: candidate.prefix || builderState.labels.find((item) => item.prefix)?.prefix || 'LBL',
+    model: candidate.sourceModel || extractorState.projectModel || 'Extractor',
+    sourcePath: candidate.contexts?.[0]?.file || 'scan'
   });
 
   candidate.status = 'confirmed';
+  renderExtractorResults();
+}
+
+function useExistingExtractorCandidate(index) {
+  const candidate = extractorState.candidates[index];
+  if (!candidate || candidate.status !== 'pending' || !candidate.existingLabel) return;
+  candidate.status = 'reused';
   renderExtractorResults();
 }
 
@@ -4810,7 +6020,7 @@ function ensureExtractorWorker() {
   if (extractorState.worker) return extractorState.worker;
 
   extractorState.worker = new Worker('./workers/extractor.worker.js');
-  extractorState.worker.onmessage = (event) => {
+  extractorState.worker.onmessage = async (event) => {
     const { type, payload } = event.data || {};
 
     if (type === 'PROGRESS') {
@@ -4821,11 +6031,17 @@ function ensureExtractorWorker() {
 
     if (type === 'COMPLETE') {
       extractorState.running = false;
-      updateExtractorProgress(100, t('extractor_scan_complete'));
-      extractorState.candidates = buildSuggestedIds(payload?.candidates || []);
-      renderExtractorResults();
-      showSuccess(t('extractor_found_candidates', { count: extractorState.candidates.length }));
-      setTimeout(() => updateExtractorProgress(0, ''), 600);
+      try {
+        updateExtractorProgress(100, t('extractor_scan_complete'));
+        extractorState.candidates = await buildSuggestedIds(payload?.candidates || []);
+        renderExtractorResults();
+        showSuccess(t('extractor_found_candidates', { count: extractorState.candidates.length }));
+      } catch (err) {
+        console.error('Failed to enrich extractor candidates:', err);
+        showError(t('extractor_scan_error'));
+      } finally {
+        setTimeout(() => updateExtractorProgress(0, ''), 600);
+      }
       return;
     }
 
@@ -4866,26 +6082,363 @@ async function handleExtractorStartScan() {
   });
 }
 
-async function handleExtractorSaveSession() {
+async function handleExtractorSelectProject() {
+  try {
+    const [fileHandle] = await window.showOpenFilePicker({
+      types: [{
+        description: 'D365FO Project Files',
+        accept: { 'application/xml': ['.rnrproj'] }
+      }],
+      multiple: false
+    });
+
+    const file = await fileHandle.getFile();
+    const content = await file.text();
+    const manifest = parseRnrprojManifest(content);
+
+    extractorState.projectName = file.name.replace('.rnrproj', '');
+    extractorState.projectModel = manifest.model || '';
+    extractorState.sessionId = createExtractorSessionId(extractorState.projectModel);
+
+    // Store project handle for later file access
+    extractorState.projectHandle = fileHandle;
+    extractorState.projectManifest = manifest;
+
+    showSuccess(t('extractor_project_loaded', { name: extractorState.projectName, files: manifest.includes.length }));
+
+    // Auto-load related files if we have folder access
+    if (state.dirHandle && manifest.includes.length > 0) {
+      await loadProjectFilesFromManifest(manifest);
+    }
+
+    renderExtractorFileTree();
+    renderExtractorSummary();
+  } catch (err) {
+    if (err.name !== 'AbortError') {
+      console.error('Failed to load project:', err);
+      showError(t('extractor_project_error') || 'Failed to load project file');
+    }
+  }
+}
+
+async function loadProjectFilesFromManifest(manifest) {
+  if (!manifest?.includes?.length || !state.directoryHandle) return;
+
+  updateExtractorStatusBadge('scanning');
+  const loadedFiles = [];
+  const model = manifest.model || extractorState.projectModel;
+
+  for (const include of manifest.includes) {
+    try {
+      const normalizedPath = normalizeFsPath(include);
+      
+      // Common D365FO paths from PackagesLocalDirectory
+      const candidates = [
+        `${model}/${model}/${normalizedPath}`,
+        `${model}/${normalizedPath}`,
+        normalizedPath
+      ];
+
+      const resolved = await resolveFileFromCandidates(candidates);
+
+      if (resolved) {
+        loadedFiles.push({
+          name: include,
+          content: resolved.content,
+          sourceModel: model,
+          scanned: false
+        });
+      }
+    } catch (e) {
+      console.warn('Failed to load file:', include, e);
+    }
+  }
+
+  extractorState.files = loadedFiles;
+  updateExtractorStatusBadge('ready');
+  renderExtractorFileTree();
+}
+
+async function saveExtractorSession() {
   if (!extractorState.sessionId) {
-    extractorState.sessionId = createExtractorSessionId();
+    extractorState.sessionId = createExtractorSessionId(extractorState.projectModel);
   }
 
   try {
     await db.saveExtractionSession({
       sessionId: extractorState.sessionId,
-      model: 'generic',
+      model: extractorState.projectModel || 'generic',
+      projectName: extractorState.projectName || '',
       pendingStrings: extractorState.candidates,
       ignoredStrings: extractorState.candidates.filter((item) => item.status === 'ignored'),
-      completedLabels: extractorState.candidates.filter((item) => item.status === 'confirmed'),
-      files: extractorState.files.map((file) => ({ name: file.name })),
+      completedLabels: extractorState.candidates.filter((item) => item.status === 'confirmed' || item.status === 'reused'),
+      files: extractorState.files.map((file) => ({ name: file.name, sourceModel: file.sourceModel || '', scanned: file.scanned })),
       lastFileProcessed: extractorState.files[0]?.name || ''
     });
-    showSuccess(t('extractor_session_saved'));
   } catch (err) {
-    console.error('Failed to save extraction session:', err);
-    showError(t('extractor_session_save_error'));
+    console.error('Failed to auto-save extraction session:', err);
   }
+}
+
+async function tryAutoResumeExtractorSession() {
+  try {
+    const sessions = await db.getExtractionSessions();
+    const session = sessions[0];
+    if (!session || !session.pendingStrings?.length) return;
+
+    const remaining = session.pendingStrings.filter(s => s.status === 'pending').length;
+    if (remaining === 0) return;
+
+    const resume = confirm(t('extractor_resume_prompt', {
+      name: session.projectName || session.model || 'Previous session',
+      remaining
+    }));
+
+    if (resume) {
+      extractorState.sessionId = session.sessionId;
+      extractorState.projectModel = session.model || '';
+      extractorState.projectName = session.projectName || '';
+      extractorState.candidates = session.pendingStrings || [];
+      extractorState.files = (session.files || []).map(f => ({ ...f, content: '' }));
+      renderExtractorFileTree();
+      renderExtractorResults();
+      renderExtractorSummary();
+      showSuccess(t('extractor_session_resumed'));
+    }
+  } catch (err) {
+    console.error('Failed to check for resumable session:', err);
+  }
+}
+
+/**
+ * Handle applying changes from the extractor to the project files
+ */
+async function handleExtractorApplyChanges() {
+  const confirmed = extractorState.candidates.filter(
+    (item) => item.status === 'confirmed' || item.status === 'reused'
+  );
+
+  if (confirmed.length === 0) {
+    showInfo(t('extractor_no_confirmed') || 'No confirmed labels to apply');
+    return;
+  }
+
+  // Check if we have a project model and target file
+  if (!extractorState.projectModel) {
+    showError(t('extractor_no_model') || 'Select a project (.rnrproj) first');
+    return;
+  }
+
+  const proceed = confirm(t('extractor_apply_confirm', { count: confirmed.length }) || 
+    `This will modify ${confirmed.length} strings in your project files. A backup will be created. Proceed?`);
+  
+  if (!proceed) return;
+
+  try {
+    updateExtractorProgress(5, t('extractor_creating_backup') || 'Creating backup...');
+    
+    // 1. Create Backup
+    const backupId = Date.now();
+    const backupFiles = [];
+    
+    for (const file of extractorState.files) {
+      if (file.content) {
+        backupFiles.push({
+          name: file.name,
+          content: file.content
+        });
+      }
+    }
+
+    await db.saveExtractionBackup({
+      id: backupId,
+      timestamp: backupId,
+      model: extractorState.projectModel,
+      files: backupFiles
+    });
+
+    // 2. Perform replacements in memory
+    updateExtractorProgress(20, t('extractor_processing_replacements') || 'Processing replacements...');
+    
+    const modifiedFilesMap = new Map();
+    const newLabelsForBuilder = [];
+
+    confirmed.forEach(candidate => {
+      const labelId = candidate.suggestedId;
+      const labelRef = `@${extractorState.projectModel}:${labelId}`;
+
+      // Collect for builder
+      newLabelsForBuilder.push({
+        labelId,
+        text: candidate.text,
+        culture: state.ai.sourceLanguage || 'en-US',
+        prefix: extractorState.projectModel,
+        source: `Extractor (${extractorState.projectName || 'Refactor'})`
+      });
+
+      // Find files that contain this candidate
+      candidate.occurrences.forEach(occ => {
+        const file = extractorState.files.find(f => f.name === occ.file);
+        if (!file) return;
+
+        let content = modifiedFilesMap.get(file.name) || file.content;
+        
+        // Replacement logic depends on file type
+        if (file.name.endsWith('.xml')) {
+          // XML tags like <Label>Text</Label>
+          const tagPattern = new RegExp(`(<(Label|HelpText|Caption|Description|DeveloperDocumentation)>)${escapeRegExp(candidate.text)}(</\\2>)`, 'g');
+          content = content.replace(tagPattern, `$1${labelRef}$3`);
+        } else {
+          // X++ literal strings
+          const stringPattern = new RegExp(`"${escapeRegExp(candidate.text)}"`, 'g');
+          content = content.replace(stringPattern, `"${labelRef}"`);
+        }
+        
+        modifiedFilesMap.set(file.name, content);
+      });
+    });
+
+    // 3. Write modified files to disk
+    updateExtractorProgress(50, t('extractor_writing_files') || 'Writing files to disk...');
+    
+    let writtenCount = 0;
+    for (const [fileName, content] of modifiedFilesMap.entries()) {
+      try {
+        const fileHandle = await resolveFileHandle(fileName);
+        if (fileHandle) {
+          await fileAccess.writeFileAsText(fileHandle, content);
+          writtenCount++;
+          
+          // Update in-memory state
+          const fileObj = extractorState.files.find(f => f.name === fileName);
+          if (fileObj) fileObj.content = content;
+        }
+      } catch (writeErr) {
+        console.error(`Failed to write file ${fileName}:`, writeErr);
+      }
+    }
+
+    // 4. Add to Builder
+    updateExtractorProgress(80, t('extractor_adding_to_builder') || 'Adding to Builder...');
+    for (const label of newLabelsForBuilder) {
+      await addLabelToBuilder(label);
+    }
+
+    // 5. Update UI
+    extractorState.candidates = extractorState.candidates.filter(
+      (item) => item.status !== 'confirmed' && item.status !== 'reused'
+    );
+    
+    updateExtractorProgress(100, t('extractor_apply_complete') || 'Refactoring complete!');
+    showSuccess(t('extractor_apply_success', { count: confirmed.length, files: writtenCount }) || 
+      `Successfully refactored ${confirmed.length} strings across ${writtenCount} files.`);
+    
+    renderExtractorResults();
+    renderExtractorSummary();
+    saveExtractorSession();
+
+  } catch (err) {
+    console.error('Extraction apply failed:', err);
+    showError(t('extractor_apply_error') || 'Failed to apply changes');
+  }
+}
+
+/**
+ * Handle project rollback
+ */
+async function handleExtractorRollback() {
+  try {
+    const backups = await db.getExtractionBackups();
+    if (!backups || backups.length === 0) {
+      showInfo(t('extractor_no_backups') || 'No backups found to rollback');
+      return;
+    }
+
+    const latest = backups[0];
+    const confirmed = confirm(t('extractor_rollback_confirm', { 
+      date: new Date(latest.timestamp).toLocaleString(),
+      count: latest.files.length 
+    }) || `Rollback to backup from ${new Date(latest.timestamp).toLocaleString()}? This will restore ${latest.files.length} files.`);
+
+    if (!confirmed) return;
+
+    updateExtractorProgress(10, t('extractor_rolling_back') || 'Restoring files...');
+
+    let restoredCount = 0;
+    for (const file of latest.files) {
+      try {
+        const fileHandle = await resolveFileHandle(file.name);
+        if (fileHandle) {
+          await fileAccess.writeFileAsText(fileHandle, file.content);
+          restoredCount++;
+          
+          // Update in-memory state if current session matches
+          const currentFile = extractorState.files.find(f => f.name === file.name);
+          if (currentFile) currentFile.content = file.content;
+        }
+      } catch (err) {
+        console.error(`Failed to restore ${file.name}:`, err);
+      }
+    }
+
+    showSuccess(t('extractor_rollback_success', { count: restoredCount }) || `Successfully restored ${restoredCount} files.`);
+    renderExtractorFileTree();
+    renderExtractorResults();
+    
+  } catch (err) {
+    console.error('Rollback failed:', err);
+    showError(t('extractor_rollback_error') || 'Failed to perform rollback');
+  }
+}
+
+/**
+ * Resolve a file handle from a relative path in the project
+ */
+async function resolveFileHandle(relativePath) {
+  if (!state.directoryHandle) return null;
+  
+  const normalized = normalizeFsPath(relativePath);
+  const segments = normalized.split('/').filter(Boolean);
+  
+  let currentDir = state.directoryHandle;
+  
+  // Handle PackagesLocalDirectory/Model/... or Model/Model/...
+  // We try common roots
+  const roots = [
+    [], // Direct from root
+    [extractorState.projectModel, extractorState.projectModel],
+    [extractorState.projectModel],
+    ['PackagesLocalDirectory', extractorState.projectModel, extractorState.projectModel]
+  ];
+
+  for (const root of roots) {
+    try {
+      let handle = state.directoryHandle;
+      for (const segment of root) {
+        handle = await handle.getDirectoryHandle(segment, { create: false });
+      }
+      
+      let fileDir = handle;
+      for (let i = 0; i < segments.length - 1; i++) {
+        fileDir = await fileDir.getDirectoryHandle(segments[i], { create: false });
+      }
+      
+      return await fileDir.getFileHandle(segments[segments.length - 1], { create: false });
+    } catch (e) {
+      // Root doesn't match, try next
+    }
+  }
+  
+  return null;
+}
+
+function escapeRegExp(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function handleExtractorSaveSession() {
+  await saveExtractorSession();
+  showSuccess(t('extractor_session_saved'));
 }
 
 async function handleExtractorResumeLastSession() {
@@ -4898,6 +6451,7 @@ async function handleExtractorResumeLastSession() {
     }
 
     extractorState.sessionId = session.sessionId;
+    extractorState.projectModel = session.model || '';
     extractorState.candidates = session.pendingStrings || [];
     renderExtractorResults();
     showSuccess(t('extractor_session_resumed'));
@@ -5345,9 +6899,14 @@ function updateAiSettingsUI() {
   }
   if (elements.aiDownloadLabel) {
     const phaseKey = state.ai.progressPhase === 'indexing' ? 'ai_phase_indexing' : 'ai_phase_downloading';
-    const label = state.ai.status === 'ready'
+    let label = state.ai.status === 'ready'
       ? t('ai_progress_ready')
       : `${t(phaseKey)} ${Math.round(state.ai.progress)}%`;
+    
+    if (state.ai.status === 'downloading' && state.ai.lastMessage) {
+      label = state.ai.lastMessage;
+    }
+    
     elements.aiDownloadLabel.textContent = label;
   }
   elements.aiDownloadProgress?.classList.toggle('hidden', !downloading && state.ai.progress <= 0);
@@ -5375,13 +6934,14 @@ async function loadAiSettingsFromDb() {
       db.getMetadata('aiSettings')
     ]);
 
-    const validStatus = aiStatus === 'ready' || aiStatus === 'downloading' || aiStatus === 'inactive'
-      ? aiStatus
-      : 'inactive';
+    let validStatus = 'inactive';
+    if (aiStatus === 'ready' || aiStatus === 'downloading' || aiStatus === 'inactive') {
+      validStatus = aiStatus;
+    }
 
     state.ai.status = validStatus === 'downloading' ? 'inactive' : validStatus;
     state.ai.progress = state.ai.status === 'ready' ? 100 : 0;
-    state.ai.progressPhase = 'downloading';
+    state.ai.progressPhase = state.ai.status === 'ready' ? 'indexing' : 'downloading';
     state.ai.enabled = !!aiSettings?.enabled;
     state.ai.semanticIdSuggestion = !!aiSettings?.semanticIdSuggestion;
     state.ai.autoTranslateOnDiscovery = !!aiSettings?.autoTranslateOnDiscovery;
@@ -5391,10 +6951,13 @@ async function loadAiSettingsFromDb() {
     if (validStatus === 'downloading') {
       await db.setMetadata('aiStatus', 'inactive');
     }
+    
+    updateAiSettingsUI();
   } catch (err) {
     console.error('Failed to load AI settings:', err);
     state.ai.status = 'inactive';
     state.ai.progress = 0;
+    updateAiSettingsUI();
   }
 }
 
@@ -5425,7 +6988,9 @@ function ensureAiWorker() {
       state.ai.status = 'downloading';
       state.ai.progress = payload?.progress ?? 0;
       state.ai.progressPhase = payload?.phase === 'indexing' ? 'indexing' : 'downloading';
+      state.ai.lastMessage = payload?.message || '';
       updateAiSettingsUI();
+      updateHeaderAiDownloadProgress();
       return;
     }
 
@@ -5755,7 +7320,8 @@ async function loadDisplaySettingsFromDb() {
           ? savedSettings.groupDuplicates 
           : true,
         uiLanguage: savedSettings.uiLanguage || 'auto',
-        builderDirectSaveMode: !!savedSettings.builderDirectSaveMode
+        builderDirectSaveMode: !!savedSettings.builderDirectSaveMode,
+        suppressRepeatedDownloadPrompt: !!savedSettings.suppressRepeatedDownloadPrompt
       };
       // Set language display locale
       if (state.displaySettings.uiLanguage === 'auto') {

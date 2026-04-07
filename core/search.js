@@ -9,6 +9,8 @@
  * The global labelsData array is PROHIBITED - all data comes from IndexedDB
  */
 
+import { DB_NAME, DB_VERSION } from './db.js';
+
 // FlexSearch is loaded globally via script tag
 const FlexSearch = window.FlexSearch;
 
@@ -102,11 +104,11 @@ export function getSettings() {
 
 /**
  * Open IndexedDB connection
- * SPEC-23: Version bumped to 3 for catalog store
+ * Uses shared DB constants to avoid version mismatch across modules/workers
  */
 function openDB() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open('d365fo-labels', 3);
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });

@@ -21,7 +21,7 @@ function lineNumberAt(content, index) {
   return line;
 }
 
-function extractFromXml(content, fileName) {
+function extractFromXml(content, fileName, sourceModel = '') {
   const results = [];
   for (const tag of XML_TAGS) {
     const regex = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'gi');
@@ -34,7 +34,8 @@ function extractFromXml(content, fileName) {
         context: {
           file: fileName,
           line: lineNumberAt(content, match.index),
-          type: `xml:${tag}`
+          type: `xml:${tag}`,
+          model: sourceModel
         }
       });
     }
@@ -48,7 +49,7 @@ function stripComments(content) {
     .replace(/\/\/.*$/gm, '');
 }
 
-function extractFromXpp(content, fileName) {
+function extractFromXpp(content, fileName, sourceModel = '') {
   const clean = stripComments(content);
   const results = [];
   const regex = /"([^"\n]{3,})"|'([^'\n]{3,})'/g;
@@ -63,7 +64,8 @@ function extractFromXpp(content, fileName) {
       context: {
         file: fileName,
         line: lineNumberAt(clean, match.index),
-        type: 'xpp:string'
+        type: 'xpp:string',
+        model: sourceModel
       }
     });
   }
@@ -107,11 +109,12 @@ self.onmessage = async (event) => {
       const name = file.name || '';
       const lower = name.toLowerCase();
       const content = file.content || '';
+      const sourceModel = file.sourceModel || '';
 
       if (lower.endsWith('.xml')) {
-        extracted.push(...extractFromXml(content, name));
+        extracted.push(...extractFromXml(content, name, sourceModel));
       } else if (lower.endsWith('.xpp')) {
-        extracted.push(...extractFromXpp(content, name));
+        extracted.push(...extractFromXpp(content, name, sourceModel));
       }
 
       self.postMessage({

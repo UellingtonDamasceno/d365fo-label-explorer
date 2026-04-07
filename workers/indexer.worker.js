@@ -10,8 +10,7 @@
  * KEY: Never await DB writes during parsing - fire and continue
  */
 
-const DB_NAME = 'd365fo-labels';
-const DB_VERSION = 3; // SPEC-23: Added catalog store
+import { DB_NAME, DB_VERSION } from '../core/db.js';
 
 // Smart Batching Constants
 const BATCH_SIZE = 5000;          // Write every 5000 labels
@@ -42,16 +41,30 @@ async function initDB() {
 
     request.onupgradeneeded = (event) => {
       const database = event.target.result;
+      const upgradeTx = event.target.transaction;
 
-      // Labels store
-      if (database.objectStoreNames.contains('labels')) {
-        database.deleteObjectStore('labels');
+      // Labels store (non-destructive upgrades)
+      let labelsStore;
+      if (!database.objectStoreNames.contains('labels')) {
+        labelsStore = database.createObjectStore('labels', { keyPath: 'id' });
+      } else {
+        labelsStore = upgradeTx.objectStore('labels');
       }
-      const labelsStore = database.createObjectStore('labels', { keyPath: 'id' });
-      labelsStore.createIndex('fullId', 'fullId', { unique: false });
-      labelsStore.createIndex('culture', 'culture', { unique: false });
-      labelsStore.createIndex('model', 'model', { unique: false });
-      labelsStore.createIndex('prefix', 'prefix', { unique: false });
+      if (!labelsStore.indexNames.contains('fullId')) {
+        labelsStore.createIndex('fullId', 'fullId', { unique: false });
+      }
+      if (!labelsStore.indexNames.contains('culture')) {
+        labelsStore.createIndex('culture', 'culture', { unique: false });
+      }
+      if (!labelsStore.indexNames.contains('model')) {
+        labelsStore.createIndex('model', 'model', { unique: false });
+      }
+      if (!labelsStore.indexNames.contains('prefix')) {
+        labelsStore.createIndex('prefix', 'prefix', { unique: false });
+      }
+      if (!labelsStore.indexNames.contains('text')) {
+        labelsStore.createIndex('text', 'text', { unique: false });
+      }
 
       // Metadata store
       if (!database.objectStoreNames.contains('metadata')) {
@@ -64,10 +77,32 @@ async function initDB() {
       }
 
       // SPEC-23: Catalog store (for virtual catalog)
+      let catalogStore;
       if (!database.objectStoreNames.contains('catalog')) {
-        const catalogStore = database.createObjectStore('catalog', { keyPath: 'id' });
+        catalogStore = database.createObjectStore('catalog', { keyPath: 'id' });
+      } else {
+        catalogStore = upgradeTx.objectStore('catalog');
+      }
+      if (!catalogStore.indexNames.contains('culture')) {
         catalogStore.createIndex('culture', 'culture', { unique: false });
+      }
+      if (!catalogStore.indexNames.contains('status')) {
         catalogStore.createIndex('status', 'status', { unique: false });
+      }
+      if (!catalogStore.indexNames.contains('model')) {
+        catalogStore.createIndex('model', 'model', { unique: false });
+      }
+
+      // Keep stores aligned with main schema if worker triggers initial upgrade
+      if (!database.objectStoreNames.contains('builder_workspace')) {
+        const builderStore = database.createObjectStore('builder_workspace', { keyPath: 'id', autoIncrement: true });
+        builderStore.createIndex('labelId', 'labelId', { unique: false });
+        builderStore.createIndex('culture', 'culture', { unique: false });
+      }
+      if (!database.objectStoreNames.contains('extraction_sessions')) {
+        const extractionStore = database.createObjectStore('extraction_sessions', { keyPath: 'sessionId' });
+        extractionStore.createIndex('updatedAt', 'updatedAt', { unique: false });
+        extractionStore.createIndex('model', 'model', { unique: false });
       }
     };
   });

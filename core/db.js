@@ -7,7 +7,7 @@
  */
 
 const DB_NAME = 'd365fo-labels';
-const DB_VERSION = 5; // SPEC-34: Added extraction sessions store
+const DB_VERSION = 6; // BUG-10: Unified DB version + text index for exact extractor reuse
 
 const STORES = {
   LABELS: 'labels',
@@ -78,6 +78,9 @@ export async function initDB() {
       }
       if (!labelsStore.indexNames.contains('prefix')) {
         labelsStore.createIndex('prefix', 'prefix', { unique: false });
+      }
+      if (!labelsStore.indexNames.contains('text')) {
+        labelsStore.createIndex('text', 'text', { unique: false });
       }
 
       // Metadata store
@@ -211,6 +214,50 @@ export async function getLabelById(id) {
 
     request.onsuccess = () => resolve(request.result || null);
     request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * Find existing labels by exact text (for extractor reuse workflow)
+ * @param {string} text
+ * @param {number} limit
+ * @returns {Promise<Array<Object>>}
+ */
+export async function findLabelsByExactText(text, limit = 10) {
+  const normalizedText = (text || '').trim();
+  if (!normalizedText) return [];
+
+  await initDB();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.LABELS, 'readonly');
+    const store = tx.objectStore(STORES.LABELS);
+    const results = [];
+
+    // Fast path: indexed exact lookup
+    if (store.indexNames.contains('text')) {
+      const request = store.index('text').getAll(normalizedText);
+      request.onsuccess = () => resolve((request.result || []).slice(0, limit));
+      request.onerror = () => reject(request.error);
+      return;
+    }
+
+    // Backward compatibility path for old stores without text index
+    const cursorRequest = store.openCursor();
+    cursorRequest.onsuccess = (event) => {
+      const cursor = event.target.result;
+      if (!cursor || results.length >= limit) {
+        resolve(results);
+        return;
+      }
+
+      const value = cursor.value;
+      if ((value?.text || '').trim() === normalizedText) {
+        results.push(value);
+      }
+      cursor.continue();
+    };
+    cursorRequest.onerror = () => reject(cursorRequest.error);
   });
 }
 
@@ -818,4 +865,4 @@ export async function removeExtractionSession(sessionId) {
   });
 }
 
-export { STORES, DB_NAME };
+export { STORES, DB_NAME, DB_VERSION };
