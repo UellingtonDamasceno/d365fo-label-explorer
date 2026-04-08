@@ -434,20 +434,21 @@ export async function search(query, options = {}) {
 
   try {
     const isIndexing = window.appState?.indexingMode !== 'idle';
-    const isGlobalScan = !query && cultures.length === 0 && !model;
+    const isBrowseMode = !query || query.trim() === '';
 
     // Level 1: Empty query or Exact Match -> Use IndexedDB cursor
-    if (!query || query.trim() === '' || exactMatch) {
-      if (isGlobalScan && isIndexing) {
-        console.warn('⚠️ Blocking global ALL scan during active ingestion. Returning FlexSearch sample.');
+    if (isBrowseMode || exactMatch) {
+      if (isBrowseMode && isIndexing) {
+        console.warn('⚠️ Blocking disk browse during active ingestion. Returning RAM results only.');
+        // Return only what is already in FlexSearch RAM
         result = await searchFlexSearch('', { cultures, model, limit, offset });
       } else {
         console.time(`[Search IDB] Level 1 (Cursor) for ${queryDesc}`);
-        result = await searchIndexedDB(query, { ...options, cultures, exactMatch });
+        result = await searchIndexedDB(query, { ...options, cultures, exactMatch, signal });
         console.timeEnd(`[Search IDB] Level 1 (Cursor) for ${queryDesc}`);
       }
     } else if (!searchSettings.enableHybridSearch) {
-      result = await searchIndexedDB(query, { ...options, cultures, exactMatch: false });
+      result = await searchIndexedDB(query, { ...options, cultures, exactMatch: false, signal });
     } else {
       // Level 2: Fuzzy search -> Use FlexSearch
       console.time(`[Search FlexSearch] Level 2 for ${queryDesc}`);

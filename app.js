@@ -6958,9 +6958,6 @@ function mergeBackgroundPairProgress(pairProgress, statusOverride = null) {
 
     state.backgroundIndexing.languageStatus.set(key, existing);
   }
-  
-  // SPEC-42: Invalidate catalog cache so next modal open fetches fresh data
-  state.ui.catalogCache = null;
 }
 
 let catalogFlushTimer = null;
