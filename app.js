@@ -247,8 +247,6 @@ function cacheElements() {
     backgroundTasksText: document.getElementById('background-tasks-text'),
     btnAiDownloadStatus: document.getElementById('btn-ai-download-status'),
     aiDownloadStatusText: document.getElementById('ai-download-status-text'),
-    btnAiTranslationStatus: document.getElementById('btn-ai-translation-status'),
-    aiTranslationStatusText: document.getElementById('ai-translation-status-text'),
     btnShortcutsHelp: document.getElementById('btn-shortcuts-help'),
     
     // Search
@@ -516,7 +514,6 @@ function setupEventListeners() {
   
   // Header
   elements.btnRescan?.addEventListener('click', handleRescan);
-  elements.btnAiTranslationStatus?.addEventListener('click', openBuilderModal);
   elements.btnShortcutsHelp?.addEventListener('click', openShortcutsModal);
   elements.labelCountBadge?.addEventListener('click', openStatsDashboardModal);
   
@@ -524,6 +521,9 @@ function setupEventListeners() {
   elements.btnBackgroundProgress?.addEventListener('click', openBackgroundProgressModal);
   elements.btnCloseBackgroundProgress?.addEventListener('click', closeBackgroundProgressModal);
   elements.btnCloseStatsDashboard?.addEventListener('click', closeStatsDashboardModal);
+  
+  // SPEC-41: Background Tasks button opens progress modal
+  elements.btnBackgroundTasks?.addEventListener('click', openBackgroundProgressModal);
   
   // Search
   const debouncedSearch = debounce(handleSearch, 300);
@@ -620,6 +620,10 @@ function setupEventListeners() {
   elements.btnBuilderFinish?.addEventListener('click', handleBuilderFinish);
   elements.btnBuilderDownload?.addEventListener('click', openExportModal);
   elements.btnBuilderAutoTranslate?.addEventListener('click', handleBuilderAutoTranslate);
+  
+  // SPEC-41: Builder Tabs
+  document.getElementById('tab-workspace')?.addEventListener('click', () => switchBuilderTab('workspace'));
+  document.getElementById('tab-history')?.addEventListener('click', () => switchBuilderTab('history'));
   
   // SPEC-32: New Label Modal
   elements.btnCloseNewLabelModal?.addEventListener('click', closeNewLabelModal);
@@ -718,6 +722,17 @@ function handleKeyboardShortcuts(e) {
     } else {
       openBuilderModal();
     }
+    return;
+  }
+
+  // SPEC-41: Alt+N to open New Label modal (within Builder)
+  if (e.altKey && e.key.toLowerCase() === 'n' && state.stage === 'READY') {
+    e.preventDefault();
+    // If Builder is closed, open it first then open New Label modal
+    if (elements.builderModal?.classList.contains('hidden')) {
+      openBuilderModal();
+    }
+    openNewLabelModal();
     return;
   }
 
@@ -2320,7 +2335,8 @@ async function buildSearchIndexStreamingWithSplash() {
  * Handle rescan
  */
 async function handleRescan() {
-  // Save previous stage for cancel logic
+  // BUG-24: Silent Re-scan - Don't block UI with Dashboard
+  const wasReady = state.stage === 'READY';
   state.previousStage = state.stage;
   
   // Check if we have a saved handle
@@ -2332,7 +2348,13 @@ async function handleRescan() {
     
     if (hasPermission) {
       state.directoryHandle = savedHandle;
-      await startDiscovery();
+      
+      // BUG-24: If we were in READY state, do silent re-scan
+      if (wasReady) {
+        await startSilentRescan();
+      } else {
+        await startDiscovery();
+      }
       return;
     }
   }
@@ -2341,6 +2363,193 @@ async function handleRescan() {
   // Show message and let user click the button again
   showInfo(t('toast_select_folder'));
   showOnboarding();
+}
+
+/**
+ * BUG-24: Generic parallel indexing with worker pool
+ * Handles priority and background indexing with task transformation and state updates
+ */
+async function startParallelIndexing(files, isPriority = false) {
+  if (files.length === 0) return { totalLabels: 0, processedFiles: 0 };
+  
+  // Transform files to fileTasks structure expected by indexFilesWithWorkers
+  // Input: { model, culture, file: { handle, prefix, name } }
+  const fileTasks = files.map(f => ({
+    handle: f.file.handle,
+    metadata: {
+      model: f.model,
+      culture: f.culture,
+      prefix: f.file.prefix,
+      sourcePath: `${f.model}/${f.culture}/${f.file.name}`
+    }
+  }));
+
+  // Use core indexing logic (SPEC-23)
+  const result = await indexFilesWithWorkers(fileTasks, isPriority);
+  
+  // Update status for each model/culture pair in this task set
+  const entryKeys = new Set(fileTasks.map(f => `${f.metadata.model}|||${f.metadata.culture}`));
+  for (const key of entryKeys) {
+    const entry = state.backgroundIndexing.languageStatus.get(key);
+    if (entry) {
+      entry.status = 'ready';
+      entry.processedFiles = entry.fileCount;
+      // Persist status to catalog store
+      await db.updateCatalogStatus(key, 'ready', entry.labelCount);
+    }
+  }
+  
+  // Final state sync
+  state.totalLabels = await db.getLabelCount();
+  updateLabelCount();
+  const now = Date.now();
+  await db.setMetadata('lastIndexed', now);
+  updateLastIndexedDisplay(now);
+  
+  // Refresh UI if needed
+  if (!isPriority) {
+    renderBackgroundSummary();
+    renderBackgroundLanguageList();
+  }
+  
+  return result;
+}
+
+/**
+ * BUG-24: Silent Re-scan - Update files in background without blocking UI
+ */
+async function startSilentRescan() {
+  console.log('🔄 Starting silent re-scan...');
+  
+  // Show toast indicating re-scan started
+  showInfo(t('toast_rescan_background') || 'Re-scanning folder in background...');
+  
+  // Keep UI in READY state while we scan in background
+  state.stage = 'READY';
+  
+  try {
+    // Discover label files in background
+    const newDiscoveryData = await fileAccess.discoverLabelFiles(
+      state.directoryHandle,
+      () => {} // No UI updates during silent scan
+    );
+    
+    if (newDiscoveryData.length === 0) {
+      showError(t('error_no_labels'));
+      return;
+    }
+    
+    // Update discovery data
+    state.discoveryData = newDiscoveryData;
+    
+    // Get current priority languages from FlexSearch
+    const currentCultures = await searchService.getIndexedCultures();
+    const priorityCultures = currentCultures.length > 0 
+      ? currentCultures 
+      : ['en-US', 'pt-BR', 'pt-PT', 'es-CO'];
+    
+    // Build file list for priority cultures only
+    const priorityFiles = [];
+    for (const model of newDiscoveryData) {
+      for (const culture of model.cultures) {
+        if (priorityCultures.includes(culture.culture)) {
+          for (const file of culture.files) {
+            priorityFiles.push({
+              model: model.model,
+              culture: culture.culture,
+              file
+            });
+          }
+        }
+      }
+    }
+    
+    if (priorityFiles.length > 0) {
+      console.log(`📦 Re-indexing ${priorityFiles.length} files for priority cultures: ${priorityCultures.join(', ')}`);
+      
+      // Clear existing labels and re-index
+      await db.clearLabels(); // Clear old data
+      await searchService.clearSearch(); // Clear FlexSearch indices
+      
+      // Re-index priority languages using quick start approach
+      state.indexingMode = 'background';
+      state.backgroundIndexing.baseLabelCount = 0;
+      state.backgroundIndexing.processedFiles = 0;
+      state.backgroundIndexing.totalLabels = 0;
+      state.backgroundIndexing.startTime = performance.now();
+      showBackgroundProgressIndicator();
+      
+      // Initialize background status for all cultures being re-scanned
+      for (const model of newDiscoveryData) {
+        for (const culture of model.cultures) {
+          const isPriority = priorityCultures.includes(culture.culture);
+          const key = `${model.model}|||${culture.culture}`;
+          state.backgroundIndexing.languageStatus.set(key, {
+            key,
+            model: model.model,
+            culture: culture.culture,
+            fileCount: culture.files.length,
+            processedFiles: 0,
+            labelCount: 0,
+            status: 'waiting',
+            isPriority,
+            startedAt: null,
+            endedAt: null,
+            durationMs: 0
+          });
+        }
+      }
+      
+      // Calculate non-priority languages for queueing
+      const backgroundFiles = [];
+      for (const model of newDiscoveryData) {
+        for (const culture of model.cultures) {
+          if (!priorityCultures.includes(culture.culture)) {
+            for (const file of culture.files) {
+              backgroundFiles.push({
+                model: model.model,
+                culture: culture.culture,
+                file
+              });
+            }
+          }
+        }
+      }
+      
+      // Total files for progress bar denominator
+      state.backgroundIndexing.totalFiles = priorityFiles.length + backgroundFiles.length;
+      
+      // Start parallel indexing
+      await startParallelIndexing(priorityFiles, true);
+      
+      // Show success after priority indexing is done
+      showSuccess(t('toast_rescan_complete') || 'Re-scan complete');
+
+      if (backgroundFiles.length > 0) {
+        console.log(`📦 Queuing ${backgroundFiles.length} files for background indexing`);
+        // Start background indexing after priority is done
+        setTimeout(async () => {
+          if (state.indexingMode !== 'background') {
+            state.indexingMode = 'background';
+            showBackgroundProgressIndicator();
+          }
+          await startParallelIndexing(backgroundFiles, false);
+          
+          // Finalize state after all background tasks are done
+          state.indexingMode = 'idle';
+          hideBackgroundProgressIndicator();
+          console.log('✅ All background indexing tasks completed.');
+        }, 100);
+      } else {
+        // No background files, we are done
+        state.indexingMode = 'idle';
+        hideBackgroundProgressIndicator();
+      }
+    }
+  } catch (err) {
+    console.error('Silent re-scan error:', err);
+    showError(t('error_rescan_failed') || 'Re-scan failed');
+  }
 }
 
 /**
@@ -3932,6 +4141,7 @@ function openBuilderModal() {
   }
   updateBuilderTranslateProgress(0, t('ai_translation_idle'));
   loadBuilderWorkspace();
+  switchBuilderTab('workspace'); // SPEC-41: Default to workspace tab
   elements.builderModal?.classList.remove('hidden');
   elements.app?.classList.add('builder-open');
 }
@@ -3939,6 +4149,124 @@ function openBuilderModal() {
 function closeBuilderModal() {
   elements.builderModal?.classList.add('hidden');
   elements.app?.classList.remove('builder-open');
+}
+
+/**
+ * SPEC-41: Switch between Workspace and History tabs
+ */
+function switchBuilderTab(tabName) {
+  const tabs = document.querySelectorAll('.builder-tab');
+  const contents = document.querySelectorAll('.builder-tab-content');
+  
+  tabs.forEach(tab => tab.classList.remove('active'));
+  contents.forEach(content => content.classList.add('hidden'));
+  
+  const activeTab = document.getElementById(`tab-${tabName}`);
+  const activeContent = document.getElementById(`builder-${tabName}-content`);
+  
+  if (activeTab) activeTab.classList.add('active');
+  if (activeContent) activeContent.classList.remove('hidden');
+  
+  if (tabName === 'history') {
+    renderBuilderHistory();
+  }
+}
+
+/**
+ * SPEC-41: Render export history
+ */
+async function renderBuilderHistory() {
+  const container = document.getElementById('builder-history-list');
+  if (!container) return;
+  
+  try {
+    const sessions = await db.getBuilderSessions();
+    
+    if (!sessions || sessions.length === 0) {
+      container.innerHTML = `
+        <div class="builder-empty-state">
+          <span class="empty-icon">📜</span>
+          <p data-i18n="history_empty">${t('history_empty')}</p>
+          <p class="hint" data-i18n="history_hint">${t('history_hint')}</p>
+        </div>
+      `;
+      return;
+    }
+    
+    // Sort by timestamp descending (newest first)
+    sessions.sort((a, b) => b.timestamp - a.timestamp);
+    
+    container.innerHTML = sessions.map(session => {
+      const date = new Date(session.timestamp);
+      const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+      const statusClass = session.status || 'completed';
+      const statusText = session.status === 'processing' ? 'Processing' : 
+                        session.status === 'failed' ? 'Failed' : 'Completed';
+      
+      return `
+        <div class="builder-history-item" data-session-id="${session.id}">
+          <div class="builder-history-item-header">
+            <span class="builder-history-item-title">${session.model || 'Untitled'}</span>
+            <span class="builder-history-item-status ${statusClass}">${statusText}</span>
+          </div>
+          <div class="builder-history-item-info">
+            <span>📅 ${dateStr}</span>
+            <span>📦 ${session.labelCount || 0} labels</span>
+            ${session.targetCultures ? `<span>🌐 ${session.targetCultures.length} cultures</span>` : ''}
+          </div>
+        </div>
+      `;
+    }).join('');
+    
+    // Add click handlers to restore sessions
+    container.querySelectorAll('.builder-history-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const sessionId = parseInt(item.dataset.sessionId);
+        restoreBuilderSession(sessionId);
+      });
+    });
+    
+  } catch (err) {
+    console.error('Error loading builder history:', err);
+    container.innerHTML = `
+      <div class="builder-empty-state">
+        <span class="empty-icon">❌</span>
+        <p>Error loading history</p>
+      </div>
+    `;
+  }
+}
+
+/**
+ * SPEC-41: Restore a session from history
+ */
+async function restoreBuilderSession(sessionId) {
+  try {
+    const session = await db.getBuilderSession(sessionId);
+    if (!session || !session.labels) {
+      showError(t('history_restore_error') || 'Failed to restore session');
+      return;
+    }
+    
+    // Clear current workspace and load session
+    await db.clearBuilderWorkspace();
+    
+    // Add labels to workspace
+    for (const label of session.labels) {
+      await db.addBuilderLabel(label);
+    }
+    
+    // Reload workspace
+    await loadBuilderWorkspace();
+    
+    // Switch to workspace tab
+    switchBuilderTab('workspace');
+    
+    showSuccess(t('history_restore_success') || `Restored ${session.labelCount} labels from history`);
+  } catch (err) {
+    console.error('Error restoring session:', err);
+    showError(t('history_restore_error') || 'Failed to restore session');
+  }
 }
 
 async function loadBuilderWorkspace() {
@@ -4753,7 +5081,8 @@ function updateBackgroundTasksHeader() {
   if (state.backgroundTasks.length > 0) {
     const completed = state.backgroundTasks.filter(t => t.status === 'completed').length;
     const total = state.backgroundTasks.length;
-    elements.backgroundTasksText.textContent = `${activeTasks.length > 0 ? '⚡ ' : ''}${completed}/${total}`;
+    // BUG-25.5: Don't add emoji here - it's already in HTML as .btn-icon
+    elements.backgroundTasksText.textContent = `${completed}/${total}`;
     
     // If we just finished a task, show a little highlight
     if (activeTasks.length === 0) {
@@ -5164,11 +5493,9 @@ function getBuilderTargetLanguages() {
     .map((option) => option.value);
 }
 
+// SPEC-41: Removed btn-ai-translation-status - this function is now a no-op
 function setAiTranslationHeaderStatus(visible, message = '') {
-  elements.btnAiTranslationStatus?.classList.toggle('hidden', !visible);
-  if (elements.aiTranslationStatusText) {
-    elements.aiTranslationStatusText.textContent = message || t('ai_translation_idle');
-  }
+  // Progress is now shown in builder translate progress bar only
 }
 
 function updateBuilderTranslateProgress(progress = 0, message = '') {
@@ -6471,9 +6798,12 @@ function showBackgroundProgressIndicator() {
   if (elements.btnBackgroundProgress) {
     elements.btnBackgroundProgress.classList.remove('hidden');
   }
+  // BUG-25.4: Hide static label count badge when progress indicator is showing
+  if (elements.labelCountBadge) {
+    elements.labelCountBadge.classList.add('hidden');
+  }
   state.backgroundIndexing.completionSummary = null;
   renderBackgroundSummary();
-  updateLabelCount();
 }
 
 /**
@@ -6487,9 +6817,14 @@ function hideBackgroundProgressIndicator() {
       textSpan.textContent = t('header_indexing_active', { percent: 0, count: '0' });
     }
   }
+  // BUG-25.4: Show static label count badge when progress indicator is hidden
+  if (elements.labelCountBadge) {
+    elements.labelCountBadge.classList.remove('hidden');
+  }
   if (state.indexingMode === 'idle') {
     hideLiveIndexLine();
   }
+  updateLabelCount();
 }
 
 /**
@@ -6755,11 +7090,7 @@ function renderBackgroundLanguageList() {
     let processingTime = '';
     if (group.firstStartedAt && group.lastEndedAt) {
       const durationMs = group.lastEndedAt - group.firstStartedAt;
-      if (durationMs >= 1000) {
-        processingTime = `${(durationMs / 1000).toFixed(1)}s`;
-      } else {
-        processingTime = `${durationMs}ms`;
-      }
+      processingTime = formatMs(durationMs);
     }
 
     return `

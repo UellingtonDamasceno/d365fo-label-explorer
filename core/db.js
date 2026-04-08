@@ -6,8 +6,8 @@
  * SPEC-32: Added Builder workspace store
  */
 
-const DB_NAME = 'd365fo-labels';
-const DB_VERSION = 8; // Added sessions and backups stores creation logic
+export const DB_NAME = 'd365fo-labels';
+export const DB_VERSION = 8; // Added sessions and backups stores creation logic
 
 const STORES = {
   LABELS: 'labels',
@@ -919,6 +919,22 @@ export async function getBuilderSessions() {
 }
 
 /**
+ * Get a specific builder session by ID
+ * @param {string|number} sessionId
+ * @returns {Promise<Object>}
+ */
+export async function getBuilderSession(sessionId) {
+  await initDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORES.SESSIONS, 'readonly');
+    const store = tx.objectStore(STORES.SESSIONS);
+    const request = store.get(sessionId);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
  * Remove a builder session
  * @param {string|number} sessionId 
  */
@@ -989,4 +1005,4 @@ export async function pruneExtractionBackups(keepCount = 5) {
   });
 }
 
-export { STORES, DB_NAME, DB_VERSION };
+export { STORES };

@@ -136,10 +136,6 @@
           <span class="btn-icon">🧠</span>
           <span id="ai-download-status-text" class="btn-text">AI Downloading...</span>
         </button>
-        <button id="btn-ai-translation-status" class="btn btn-outline btn-sm hidden" title="AI translation progress">
-          <span class="btn-icon">✨</span>
-          <span id="ai-translation-status-text" class="btn-text" data-i18n="ai_translation_idle">AI Translation</span>
-        </button>
         <button id="btn-shortcuts-help" class="btn btn-outline btn-sm" title="Keyboard shortcuts">
           <span class="btn-icon">⌨️</span>
         </button>
@@ -254,42 +250,62 @@
             ⚠️ <span data-i18n="builder_direct_save_warning">Direct Save mode active. Changes will be applied to original files.</span>
           </div>
           
+          <!-- SPEC-41: Tabs for Workspace and History -->
+          <div class="builder-tabs">
+            <button id="tab-workspace" class="builder-tab active" data-i18n="tab_workspace">Workspace</button>
+            <button id="tab-history" class="builder-tab" data-i18n="tab_history">History</button>
+          </div>
+          
           <div class="builder-body">
-            <!-- Toolbar -->
-            <div class="builder-toolbar">
-              <button id="btn-builder-new" class="btn btn-outline btn-sm">
-                ➕ <span data-i18n="btn_new_label">New Label</span>
-              </button>
-              <button id="btn-builder-clear" class="btn btn-outline btn-sm">
-                🗑️ <span data-i18n="btn_clear_all">Clear All</span>
-              </button>
-              <div class="builder-toolbar-spacer"></div>
-              <select id="builder-culture-select" class="builder-culture-select">
-                <option value="en-US">en-US</option>
-                <option value="pt-BR">pt-BR</option>
-              </select>
-            </div>
-
-            <div class="builder-export-hint">
-              ✨ <span data-i18n="builder_export_translate_hint">Translation options are configured at export time.</span>
-            </div>
-
-            <div id="builder-translate-progress" class="builder-translate-progress hidden">
-              <div class="progress-bar">
-                <div id="builder-translate-fill" class="progress-fill"></div>
+            <!-- Workspace Tab Content -->
+            <div id="builder-workspace-content" class="builder-tab-content">
+              <!-- Toolbar -->
+              <div class="builder-toolbar">
+                <button id="btn-builder-new" class="btn btn-outline btn-sm">
+                  ➕ <span data-i18n="btn_new_label">New Label</span>
+                </button>
+                <button id="btn-builder-clear" class="btn btn-outline btn-sm">
+                  🗑️ <span data-i18n="btn_clear_all">Clear All</span>
+                </button>
+                <div class="builder-toolbar-spacer"></div>
+                <select id="builder-culture-select" class="builder-culture-select">
+                  <option value="en-US">en-US</option>
+                  <option value="pt-BR">pt-BR</option>
+                </select>
               </div>
-              <span id="builder-translate-label" class="ai-progress-label">0%</span>
+
+              <div class="builder-export-hint">
+                ✨ <span data-i18n="builder_export_translate_hint">Translation options are configured at export time.</span>
+              </div>
+
+              <div id="builder-translate-progress" class="builder-translate-progress hidden">
+                <div class="progress-bar">
+                  <div id="builder-translate-fill" class="progress-fill"></div>
+                </div>
+                <span id="builder-translate-label" class="ai-progress-label">0%</span>
+              </div>
+              
+              <!-- Workspace List -->
+              <div id="builder-workspace" class="builder-workspace-list">
+                <div id="builder-empty-state" class="builder-empty-state">
+                  <span class="empty-icon">📦</span>
+                  <p data-i18n="builder_empty_hint">Add labels from search results or create new ones.</p>
+                  <p class="hint" data-i18n="builder_tip">Tip: Press <kbd>+</kbd> on any label card to add it here.</p>
+                </div>
+                <div id="builder-items-list" class="builder-items-list hidden">
+                  <!-- Builder items will be rendered here -->
+                </div>
+              </div>
             </div>
             
-            <!-- Workspace List -->
-            <div id="builder-workspace" class="builder-workspace-list">
-              <div id="builder-empty-state" class="builder-empty-state">
-                <span class="empty-icon">📦</span>
-                <p data-i18n="builder_empty_hint">Add labels from search results or create new ones.</p>
-                <p class="hint" data-i18n="builder_tip">Tip: Press <kbd>+</kbd> on any label card to add it here.</p>
-              </div>
-              <div id="builder-items-list" class="builder-items-list hidden">
-                <!-- Builder items will be rendered here -->
+            <!-- History Tab Content -->
+            <div id="builder-history-content" class="builder-tab-content hidden">
+              <div class="builder-history-list" id="builder-history-list">
+                <div class="builder-empty-state">
+                  <span class="empty-icon">📜</span>
+                  <p data-i18n="history_empty">No export history yet.</p>
+                  <p class="hint" data-i18n="history_hint">Exported sessions will appear here.</p>
+                </div>
               </div>
             </div>
           </div>

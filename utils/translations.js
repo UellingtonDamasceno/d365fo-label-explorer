@@ -179,6 +179,9 @@ export const translations = {
     toast_no_labels_found: 'No D365FO label files found. Make sure you selected the correct folder.',
     toast_db_init_error: 'Failed to initialize database. Please check your browser settings.',
     toast_language_filter_applied: 'Language filter applied ({count} languages)',
+    toast_rescan_background: 'Re-scanning folder in background...',
+    toast_rescan_complete: 'Re-scan complete',
+    error_rescan_failed: 'Re-scan failed. Please try again.',
     
     // Language Filter Modal
     filter_languages: 'Filter Languages',
@@ -285,6 +288,14 @@ export const translations = {
     
     // Builder Modal
     builder_title: 'Label Builder IDE',
+    tab_workspace: 'Workspace',
+    tab_history: 'History',
+    history_empty: 'No export history yet',
+    history_hint: 'Exported sessions will appear here',
+    history_restore: 'Restore',
+    history_download: 'Download',
+    history_restore_success: 'Session restored successfully',
+    history_restore_error: 'Failed to restore session',
     builder_new_label: 'New Label',
     builder_tip: 'Tip: Press <kbd>+</kbd> on any label card to add it here.',
     builder_direct_save_warning: 'Warning: Direct edit mode is active. Changes may affect original files.',
@@ -580,6 +591,9 @@ export const translations = {
     toast_no_labels_found: 'Nenhum arquivo de label D365FO encontrado. Verifique se selecionou a pasta correta.',
     toast_db_init_error: 'Falha ao inicializar o banco de dados. Verifique as configurações do navegador.',
     toast_language_filter_applied: 'Filtro de idiomas aplicado ({count} idiomas)',
+    toast_rescan_background: 'Re-escaneando pasta em segundo plano...',
+    toast_rescan_complete: 'Re-escaneamento completo',
+    error_rescan_failed: 'Re-escaneamento falhou. Tente novamente.',
     
     // Language Filter Modal
     filter_languages: 'Filtrar Idiomas',
@@ -685,6 +699,14 @@ export const translations = {
     
     // Builder Modal
     builder_title: 'Construtor de Labels',
+    tab_workspace: 'Workspace',
+    tab_history: 'Histórico',
+    history_empty: 'Nenhum histórico de exportação ainda',
+    history_hint: 'Sessões exportadas aparecerão aqui',
+    history_restore: 'Restaurar',
+    history_download: 'Baixar',
+    history_restore_success: 'Sessão restaurada com sucesso',
+    history_restore_error: 'Falha ao restaurar sessão',
     builder_new_label: 'Novo Label',
     builder_tip: 'Dica: Pressione <kbd>+</kbd> em qualquer card para adicionar aqui.',
     builder_direct_save_warning: 'Atenção: modo de edição direta ativo. Alterações podem afetar arquivos originais.',

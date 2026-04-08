@@ -28,6 +28,9 @@ const modelCache = new Map(); // key: "model|culture" -> { lastAccess, labelCoun
 const MAX_MODELS_IN_MEMORY = 5; // Configurable via settings
 const PRIORITY_LANGUAGES = ['en-US']; // Warm start languages
 
+// BUG-24: Track indexed cultures for silent re-scan
+const indexedCultures = new Set();
+
 // Settings (stored in IndexedDB, loaded on init)
 let searchSettings = {
   maxModelsInMemory: 5,
@@ -216,6 +219,11 @@ export function indexLabels(labels) {
         modelCache.set(cacheKey, { lastAccess: Date.now(), labelCount: 0 });
       }
       modelCache.get(cacheKey).labelCount++;
+      
+      // BUG-24: Track indexed cultures
+      if (label.culture) {
+        indexedCultures.add(label.culture);
+      }
     }
     indexedLabelCount += labels.length;
     return;
@@ -240,6 +248,11 @@ export function indexLabels(labels) {
         modelCache.set(cacheKey, { lastAccess: Date.now(), labelCount: 0 });
       }
       modelCache.get(cacheKey).labelCount++;
+      
+      // BUG-24: Track indexed cultures
+      if (label.culture) {
+        indexedCultures.add(label.culture);
+      }
     }
     
     const chunkSize = end - processed;
@@ -634,6 +647,7 @@ export function clearSearch() {
   }
   modelCache.clear();
   indexedLabelCount = 0;
+  indexedCultures.clear(); // BUG-24: Reset tracked cultures
 }
 
 /**
@@ -642,6 +656,14 @@ export function clearSearch() {
  */
 export function isReady() {
   return searchIndex !== null;
+}
+
+/**
+ * BUG-24: Get list of cultures currently indexed in FlexSearch
+ * @returns {Array<string>} Array of culture codes
+ */
+export function getIndexedCultures() {
+  return [...indexedCultures];
 }
 
 /**

@@ -112,9 +112,10 @@ async function initDB() {
  * SPEC-23: Fire-and-forget batch save (non-blocking)
  * Returns promise but caller doesn't await it during parsing
  */
-function saveBatchFireAndForget(labels) {
+function saveBatchFireAndForget(labels, affectedPairs = null) {
   if (!labels.length) return Promise.resolve(0);
   
+  const writeStart = performance.now();
   const promise = new Promise((resolve, reject) => {
     const tx = db.transaction('labels', 'readwrite', { durability: 'relaxed' });
     const store = tx.objectStore('labels');
@@ -123,7 +124,17 @@ function saveBatchFireAndForget(labels) {
       store.put(labels[i]);
     }
 
-    tx.oncomplete = () => resolve(labels.length);
+    tx.oncomplete = () => {
+      const duration = performance.now() - writeStart;
+      // If we have pair stats, distribute the write time
+      if (affectedPairs) {
+        const share = duration / affectedPairs.length;
+        for (const pair of affectedPairs) {
+          pair.totalProcessingMs += share;
+        }
+      }
+      resolve(labels.length);
+    };
     tx.onerror = () => {
       console.error('Batch save error:', tx.error);
       resolve(0); // Don't reject - fire and forget
@@ -314,7 +325,12 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
         
         // SPEC-23: Fire-and-forget when batch is full
         if (batchBuffer.length >= BATCH_SIZE) {
-          saveBatchFireAndForget([...batchBuffer]); // Clone and fire
+          // Identify cultures in this batch to attribute write time
+          const batchPairs = [...new Set(batchBuffer.map(l => `${l.model}|||${l.culture}`))]
+            .map(key => pairStats.get(key))
+            .filter(Boolean);
+            
+          saveBatchFireAndForget([...batchBuffer], batchPairs); // Clone and fire
           totalLabels += batchBuffer.length;
           batchBuffer = []; // Reset immediately (non-blocking)
         }
@@ -356,7 +372,11 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
   
   // Flush remaining batch
   if (batchBuffer.length > 0) {
-    saveBatchFireAndForget([...batchBuffer]);
+    const finalBatchPairs = [...new Set(batchBuffer.map(l => `${l.model}|||${l.culture}`))]
+      .map(key => pairStats.get(key))
+      .filter(Boolean);
+      
+    saveBatchFireAndForget([...batchBuffer], finalBatchPairs);
     totalLabels += batchBuffer.length;
     batchBuffer = [];
   }
@@ -365,6 +385,14 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
   console.time('⏱️ Flush Pending Writes');
   await flushPendingWrites();
   console.timeEnd('⏱️ Flush Pending Writes');
+  
+  // Final update of lastEndedAt for all pairs to include flush time
+  const now = Date.now();
+  for (const pair of pairStats.values()) {
+    if (pair.processedFiles > 0) {
+      pair.lastEndedAt = now;
+    }
+  }
   
   const elapsed = performance.now() - startTime;
   console.log(`✅ Worker ${mode} done: ${totalLabels} labels in ${(elapsed/1000).toFixed(1)}s`);
