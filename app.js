@@ -558,8 +558,12 @@ function setupEventListeners() {
   elements.btnClearFilters?.addEventListener('click', clearAllFilters);
   elements.btnAiDownloadModel?.addEventListener('click', startAiModelDownload);
   elements.btnAiClearCache?.addEventListener('click', clearAiCache);
-  elements.settingAiEnabled?.addEventListener('change', updateAiSettingsUI);
-  
+  elements.settingAiEnabled?.addEventListener('change', (e) => {
+    state.ai.enabled = e.target.checked;
+    updateAiSettingsUI();
+    saveAiSettingsToDb();
+  });
+
   // SPEC-19: Fuzzy threshold slider live preview
   elements.settingFuzzyThreshold?.addEventListener('input', (e) => {
     if (elements.fuzzyThresholdValue) {
@@ -6674,35 +6678,84 @@ function renderBackgroundSummary() {
 
 /**
  * Render language status list in progress modal
+ * SPEC-38: Groups by culture to reduce DOM nodes from 8000+ to ~40
  */
 function renderBackgroundLanguageList() {
   if (!elements.bgLanguageList) return;
 
-  const rows = [...state.backgroundIndexing.languageStatus.values()];
-  rows.sort((a, b) => {
+  // SPEC-38: Group by culture for massive performance improvement
+  const cultureGroups = new Map();
+  
+  for (const entry of state.backgroundIndexing.languageStatus.values()) {
+    if (!cultureGroups.has(entry.culture)) {
+      cultureGroups.set(entry.culture, {
+        culture: entry.culture,
+        models: [],
+        totalFiles: 0,
+        processedFiles: 0,
+        totalLabels: 0,
+        isPriority: false,
+        firstStartedAt: null,
+        lastEndedAt: null
+      });
+    }
+    
+    const group = cultureGroups.get(entry.culture);
+    group.models.push(entry.model);
+    group.totalFiles += entry.fileCount || 0;
+    group.processedFiles += entry.processedFiles || 0;
+    group.totalLabels += entry.labelCount || 0;
+    if (entry.isPriority) group.isPriority = true;
+    
+    // SPEC-38: Wall-clock time tracking
+    if (entry.firstStartedAt && (!group.firstStartedAt || entry.firstStartedAt < group.firstStartedAt)) {
+      group.firstStartedAt = entry.firstStartedAt;
+    }
+    if (entry.lastEndedAt && (!group.lastEndedAt || entry.lastEndedAt > group.lastEndedAt)) {
+      group.lastEndedAt = entry.lastEndedAt;
+    }
+  }
+
+  // Convert to array and sort (priority first, then alphabetically)
+  const rows = [...cultureGroups.values()].sort((a, b) => {
     if (a.isPriority && !b.isPriority) return -1;
     if (!a.isPriority && b.isPriority) return 1;
-    if (a.model !== b.model) return a.model.localeCompare(b.model);
     return a.culture.localeCompare(b.culture);
   });
 
-  const items = rows.map((entry) => {
-    const statusClass = entry.status === 'indexing' ? 'processing' : entry.status;
-    const statusIcon = entry.status === 'ready' ? '✅' : entry.status === 'indexing' ? '⏳' : '💤';
-    const statusTextKey = entry.status === 'ready'
+  // Build HTML efficiently using DocumentFragment pattern
+  const items = rows.map((group) => {
+    const status = getLanguageAggregateStatus(group.culture);
+    const statusClass = status === 'indexing' ? 'processing' : status;
+    const statusIcon = status === 'ready' ? '✅' : status === 'indexing' ? '⏳' : '💤';
+    const statusTextKey = status === 'ready'
       ? 'status_ready'
-      : entry.status === 'indexing'
+      : status === 'indexing'
         ? 'status_processing'
         : 'status_waiting';
-    const progressPercent = entry.fileCount > 0
-      ? Math.min(100, Math.round((entry.processedFiles / entry.fileCount) * 100))
-      : (entry.status === 'ready' ? 100 : 0);
-    const priorityBadge = entry.isPriority ? ` <span class="filter-status-indicator ready">⭐</span>` : '';
+    
+    const progressPercent = group.totalFiles > 0
+      ? Math.min(100, Math.round((group.processedFiles / group.totalFiles) * 100))
+      : (status === 'ready' ? 100 : 0);
+    
+    const priorityBadge = group.isPriority ? ` <span class="filter-status-indicator ready">⭐</span>` : '';
+    
+    // SPEC-38: Wall-clock processing time
+    let processingTime = '';
+    if (group.firstStartedAt && group.lastEndedAt) {
+      const durationMs = group.lastEndedAt - group.firstStartedAt;
+      if (durationMs >= 1000) {
+        processingTime = `${(durationMs / 1000).toFixed(1)}s`;
+      } else {
+        processingTime = `${durationMs}ms`;
+      }
+    }
 
     return `
       <div class="language-status-item ${statusClass}">
-        <span class="model-name">${escapeHtml(entry.model)}${priorityBadge}</span>
-        <span class="language-name">${formatLanguageDisplay(entry.culture)}</span>
+        <span class="language-name">${formatLanguageDisplay(group.culture)}${priorityBadge}</span>
+        <span class="model-count">${group.models.length} ${t('models_suffix') || 'models'}</span>
+        <span class="label-count">${group.totalLabels.toLocaleString()} labels</span>
         <div class="language-progress-cell">
           <div class="language-progress-bar">
             <div class="language-progress-fill" style="width:${progressPercent}%"></div>
@@ -6710,6 +6763,7 @@ function renderBackgroundLanguageList() {
           <span class="language-progress-text">${progressPercent}%</span>
         </div>
         <span class="language-status-badge">${statusIcon} ${t(statusTextKey)}</span>
+        ${processingTime ? `<span class="processing-time">${processingTime}</span>` : ''}
       </div>
     `;
   });

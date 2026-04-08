@@ -230,6 +230,7 @@ export const translations = {
     background_hint: 'You can continue searching while indexing completes.',
     no_priority_languages_found: 'No priority languages found in this folder',
     background_indexing_complete: 'Background indexing complete!',
+    models_suffix: 'models',
     
     // SPEC-36: Tools Menu & Merger
     btn_tools: 'Tools',
@@ -630,6 +631,7 @@ export const translations = {
     background_hint: 'Você pode continuar buscando enquanto a indexação completa.',
     no_priority_languages_found: 'Nenhum idioma prioritário encontrado nesta pasta',
     background_indexing_complete: 'Indexação em segundo plano concluída!',
+    models_suffix: 'modelos',
     
     // SPEC-36: Tools Menu & Merger
     btn_tools: 'Ferramentas',
