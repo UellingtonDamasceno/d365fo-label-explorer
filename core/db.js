@@ -7,7 +7,7 @@
  */
 
 export const DB_NAME = 'd365fo-labels';
-export const DB_VERSION = 9; // Added search_indices and bloom_filters
+export const DB_VERSION = 10; // Added multi-entry 'tokens' index for native inverted index
 
 const STORES = {
   LABELS: 'labels',
@@ -85,6 +85,9 @@ export async function initDB() {
       }
       if (!labelsStore.indexNames.contains('text')) {
         labelsStore.createIndex('text', 'text', { unique: false });
+      }
+      if (!labelsStore.indexNames.contains('tokens')) {
+        labelsStore.createIndex('tokens', 'tokens', { multiEntry: true, unique: false });
       }
 
       // Metadata store

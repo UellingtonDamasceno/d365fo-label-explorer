@@ -1778,6 +1778,10 @@ async function handleQuickStart() {
   });
   await db.saveCatalog(catalogEntries);
   
+  // SPEC-42: Set initial filters to priority languages so the first search is fast (RAM-based)
+  state.filters.cultures = [...priorityLangs];
+  renderFilterPills();
+
   // Start indexing priority files (non-blocking UI release - Spec 26)
   console.log(`🚀 SPEC-23 Quick Start: ${priorityFiles.length} priority files`);
   state.backgroundIndexing.startTime = performance.now();
@@ -2463,6 +2467,10 @@ async function startSilentRescan() {
       ? currentCultures 
       : ['en-US', 'pt-BR', 'pt-PT', 'es-CO'];
     
+    // SPEC-42: Automatically set filters to priority cultures to avoid global DB scan during ingestion
+    state.filters.cultures = [...priorityCultures];
+    renderFilterPills();
+    
     // Build file list for priority cultures only
     const priorityFiles = [];
     for (const model of newDiscoveryData) {
@@ -2950,7 +2958,10 @@ async function handleSearch(isLoadMore = false) {
       exactMatch: state.filters.exactMatch,
       useBloomFilter: state.filters.useBloomFilter,
       limit: state.searchPagination.limit,
-      offset: state.searchPagination.offset
+      offset: state.searchPagination.offset,
+      // SPEC-42: Pass array of filters to engine
+      cultures: [...state.filters.cultures],
+      models: [...state.filters.models]
     };
 
     if (query.length >= 2 && searchService.getStats().totalIndexed === 0 && state.indexingMode !== 'idle') {

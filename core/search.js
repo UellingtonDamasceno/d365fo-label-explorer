@@ -17,6 +17,9 @@ const bloomFiltersCache = new Map();
 let globalBloomFilter = null;
 const BloomFilter = window.BloomFilter;
 
+// SPEC-42: Support for search cancellation
+let currentSearchAbortController = null;
+
 /**
  * SPEC-42: Load Bloom Filter from IndexedDB
  */
@@ -381,26 +384,45 @@ export function indexAll(labels) {
  * @returns {Promise<Array<Object>>} - Matching labels
  */
 export async function search(query, options = {}) {
-  const { exactMatch = false, culture, model, limit = 100, offset = 0 } = options;
+  // SPEC-42: Abort previous search if still running
+  if (currentSearchAbortController) {
+    currentSearchAbortController.abort();
+  }
+  currentSearchAbortController = new AbortController();
+  const { signal } = currentSearchAbortController;
+
+  // Support both single culture string and multiple cultures array
+  const { exactMatch = false, model, limit = 100, offset = 0 } = options;
+  const cultures = Array.isArray(options.cultures) ? options.cultures : (options.culture ? [options.culture] : []);
+  
   const startMark = performance.now();
   const queryDesc = query ? `"${query}"` : 'ALL';
-  console.log(`[Search Start] Query: ${queryDesc} | Exact: ${exactMatch} | Culture: ${culture || 'Any'} | Limit: ${limit} | Offset: ${offset}`);
-
-  let result;
+  const cultureDesc = cultures.length > 0 ? cultures.join(',') : 'Any';
   
+  console.log(`[Search Start] Query: ${queryDesc} | Exact: ${exactMatch} | Cultures: ${cultureDesc} | Limit: ${limit}`);
+
   // SPEC-42: Fast-fail using Bloom Filter (applied globally)
   // Guard: Skip bloom check for very short fuzzy queries (prefixes < 3 aren't indexed)
-  const isShortFuzzy = !exactMatch && query.trim().length < 3;
+  const isShortFuzzy = !exactMatch && query && query.trim().length < 3;
 
   if (query && options.useBloomFilter !== false && !isShortFuzzy) {
-    if (culture && model) {
-      const filter = await loadBloomFilter(model, culture);
-      if (filter && !filter.hasText(query)) {
-        console.log(`🚫 Local Bloom Filter rejected search for "${query}" in ${model}|${culture}`);
+    // If we have specific cultures, we can check their local filters
+    if (cultures.length > 0 && model) {
+      // Check each selected culture
+      let possiblyExists = false;
+      for (const cult of cultures) {
+        const filter = await loadBloomFilter(model, cult);
+        if (!filter || filter.hasText(query)) {
+          possiblyExists = true;
+          break;
+        }
+      }
+      if (!possiblyExists) {
+        console.log(`🚫 Local Bloom Filters rejected search for "${query}" in ${model}|[${cultureDesc}]`);
         return [];
       }
-    } else if (!culture && !model && globalBloomFilter) {
-      // Cross-model global search protection
+    } else if (cultures.length === 0 && !model && globalBloomFilter) {
+      // Cross-model global search protection (only if NO filters are set)
       if (!globalBloomFilter.hasText(query)) {
         console.log(`🚫 Global Bloom Filter rejected search for "${query}" across all models`);
         return [];
@@ -408,21 +430,33 @@ export async function search(query, options = {}) {
     }
   }
 
-  // Level 1: Empty query or Exact Match -> Use IndexedDB cursor
-  if (!query || query.trim() === '' || exactMatch) {
-    console.time(`[Search IDB] Level 1 (Cursor) for ${queryDesc}`);
-    result = await searchIndexedDB(query, { culture, model, limit, offset, exactMatch, useBloomFilter: options.useBloomFilter });
-    console.timeEnd(`[Search IDB] Level 1 (Cursor) for ${queryDesc}`);
-  } else if (!searchSettings.enableHybridSearch) {
-    // Fallback to IndexedDB if hybrid disabled
-    console.time(`[Search IDB Fallback] Level 2 for ${queryDesc}`);
-    result = await searchIndexedDB(query, { culture, model, limit, offset, exactMatch: false, useBloomFilter: options.useBloomFilter });
-    console.timeEnd(`[Search IDB Fallback] Level 2 for ${queryDesc}`);
-  } else {
-    // Level 2: Fuzzy search -> Use FlexSearch
-    console.time(`[Search FlexSearch] Level 2 for ${queryDesc}`);
-    result = await searchFlexSearch(query, { culture, model, limit, offset, useBloomFilter: options.useBloomFilter });
-    console.timeEnd(`[Search FlexSearch] Level 2 for ${queryDesc}`);
+  let result = [];
+
+  try {
+    const isIndexing = window.appState?.indexingMode !== 'idle';
+    const isGlobalScan = !query && cultures.length === 0 && !model;
+
+    // Level 1: Empty query or Exact Match -> Use IndexedDB cursor
+    if (!query || query.trim() === '' || exactMatch) {
+      if (isGlobalScan && isIndexing) {
+        console.warn('⚠️ Blocking global ALL scan during active ingestion. Returning FlexSearch sample.');
+        result = await searchFlexSearch('', { cultures, model, limit, offset });
+      } else {
+        console.time(`[Search IDB] Level 1 (Cursor) for ${queryDesc}`);
+        result = await searchIndexedDB(query, { ...options, cultures, exactMatch });
+        console.timeEnd(`[Search IDB] Level 1 (Cursor) for ${queryDesc}`);
+      }
+    } else if (!searchSettings.enableHybridSearch) {
+      result = await searchIndexedDB(query, { ...options, cultures, exactMatch: false });
+    } else {
+      // Level 2: Fuzzy search -> Use FlexSearch
+      console.time(`[Search FlexSearch] Level 2 for ${queryDesc}`);
+      result = await searchFlexSearch(query, { cultures, model, limit, offset });
+      console.timeEnd(`[Search FlexSearch] Level 2 for ${queryDesc}`);
+    }
+  } catch (err) {
+    if (err.name === 'AbortError') return [];
+    throw err;
   }
 
   const duration = (performance.now() - startMark).toFixed(2);
@@ -581,7 +615,14 @@ async function searchFlexSearch(query, options = {}) {
   }
   
   // FALLBACK: If FlexSearch returned nothing in a global search, try Level 1 (IndexedDB)
+  // SAFETY: Do NOT fallback to disk if we are currently indexing to prevent DB lock
+  const isIndexing = window.appState?.indexingMode !== 'idle';
+  
   if (matchedLabels.length === 0 && !model && !culture) {
+    if (isIndexing) {
+      console.warn('🕒 FlexSearch empty, but skipping disk fallback due to active indexing.');
+      return [];
+    }
     console.log('🔍 FlexSearch returned no results, falling back to IndexedDB scan...');
     return searchIndexedDB(query, options);
   }

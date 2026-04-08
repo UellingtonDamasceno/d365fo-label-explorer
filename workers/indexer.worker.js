@@ -8,45 +8,12 @@ importScripts('../libs/flexsearch.bundle.min.js');
 importScripts('../utils/bloom-filter.js');
 
 const DB_NAME = 'd365fo-labels';
-const DB_VERSION = 9; // SPEC-42
+const DB_VERSION = 10; // SPEC-42 Inverted Index
 
 // Smart Batching Constants
 const BATCH_SIZE = 5000;          // Write every 5000 labels
 const FILE_CONCURRENCY = 3;       // Reduced to lower contention
 const PROGRESS_INTERVAL = 10;     // Report every N files
-
-/**
- * Manual parser for label files (replaces ESM import)
- */
-function parseLabelFile(content, metadata) {
-  const { model, culture, prefix, sourcePath } = metadata;
-  const labels = [];
-  
-  // Basic Regex for label lines: LabelId=LabelText
-  const labelRegex = /^([^=]+)=(.*)$/gm;
-  let match;
-  
-  while ((match = labelRegex.exec(content)) !== null) {
-    const labelId = match[1].trim();
-    const text = match[2].trim();
-    
-    if (labelId) {
-      labels.push({
-        id: `${model}|${culture}|${labelId}`,
-        fullId: `@${prefix}:${labelId}`,
-        labelId,
-        text,
-        model,
-        culture,
-        prefix,
-        help: '', // Basic parser doesn't extract help descriptions
-        sourcePath
-      });
-    }
-  }
-  
-  return labels;
-}
 
 let db = null;
 let pendingWrites = [];           // Track fire-and-forget promises
@@ -263,16 +230,26 @@ function parseFileContent(content, metadata) {
       const text = line.slice(equalsIndex + 1);
       
       if (labelId && labelId.charCodeAt(0) !== 32) {
+        // SPEC-42: Pre-calculate normalized search target and tokens
+        const normalizedText = text.toLowerCase();
+        const normalizedId = labelId.toLowerCase();
+        const searchTarget = `${normalizedId} ${normalizedText}`.trim();
+
+        // Generate tokens for Native Inverted Index (multiEntry)
+        const tokens = [...new Set(searchTarget.split(/[\W_]+/).filter(t => t.length > 2))];
+
         currentLabel = {
           id: `${model}|${culture}|${prefix}|${labelId}`,
           fullId: `@${prefix}:${labelId}`,
           labelId,
           text,
-          help: '',
           model,
           culture,
           prefix,
-          sourcePath
+          help: '', 
+          sourcePath,
+          s: searchTarget, // Pre-normalized search string
+          tokens: tokens   // Array for IndexedDB multiEntry index
         };
       }
     }

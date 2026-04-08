@@ -7,7 +7,7 @@
 importScripts('../utils/bloom-filter.js');
 
 const DB_NAME = 'd365fo-labels';
-const DB_VERSION = 9; // SPEC-42
+const DB_VERSION = 10; // SPEC-42 Inverted Index
 
 let db = null;
 
@@ -96,8 +96,12 @@ async function searchIndexedDB(query, options = {}) {
     let scannedCount = 0;
     let skippedCount = 0;
     
-    // Use index if filtering by culture or model
-    if (culture) {
+    // SPEC-42: Optimized Search
+    const isSingleWord = lowerQuery && !lowerQuery.includes(' ') && lowerQuery.length > 2;
+    
+    if (isSingleWord && !exactMatch) {
+      request = store.index('tokens').openCursor(IDBKeyRange.only(lowerQuery));
+    } else if (culture) {
       request = store.index('culture').openCursor(IDBKeyRange.only(culture));
     } else if (model) {
       request = store.index('model').openCursor(IDBKeyRange.only(model));
@@ -109,33 +113,27 @@ async function searchIndexedDB(query, options = {}) {
       const cursor = event.target.result;
       scannedCount++;
       
-      // Report progress every 5000 items
       if (scannedCount % 5000 === 0) {
         self.postMessage({ type: 'PROGRESS', scanned: scannedCount });
       }
       
       if (cursor && results.length < limit) {
         const label = cursor.value;
-        
-        // Apply additional filters
         let matches = true;
         
         if (model && label.model !== model) matches = false;
         if (culture && label.culture !== culture) matches = false;
         
-        // Apply text search if query provided
         if (matches && lowerQuery) {
           if (exactMatch) {
             matches = label.text?.toLowerCase() === lowerQuery || 
                       label.labelId?.toLowerCase() === lowerQuery;
+          } else if (isSingleWord) {
+            // Already matched by the 'tokens' index
+            matches = true; 
           } else {
-            const textMatch = 
-              label.text?.toLowerCase().includes(lowerQuery) ||
-              label.fullId?.toLowerCase().includes(lowerQuery) ||
-              label.labelId?.toLowerCase().includes(lowerQuery) ||
-              label.help?.toLowerCase().includes(lowerQuery);
-            
-            matches = textMatch;
+            // Optimized phrase search using pre-normalized field 's'
+            matches = label.s?.includes(lowerQuery);
           }
         }
         
