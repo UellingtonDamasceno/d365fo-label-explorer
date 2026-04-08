@@ -6,9 +6,14 @@
 // SPEC-42: Use importScripts for global libraries (more compatible than ESM in workers)
 importScripts('../libs/flexsearch.bundle.min.js');
 importScripts('../utils/bloom-filter.js');
+importScripts('./utils/label-parser.js');
 
+// sync: core/db.js
 const DB_NAME = 'd365fo-labels';
+// sync: core/db.js
 const DB_VERSION = 10; // SPEC-42 Inverted Index
+let runtimeDbName = DB_NAME;
+let runtimeDbVersion = DB_VERSION;
 
 // Smart Batching Constants
 const BATCH_SIZE = 5000;          // Write every 5000 labels
@@ -25,80 +30,20 @@ async function initDB() {
   if (db) return db;
 
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    const request = indexedDB.open(runtimeDbName, runtimeDbVersion);
 
     request.onerror = () => reject(new Error('Worker: Failed to open IndexedDB'));
     
     request.onsuccess = () => {
       db = request.result;
+      db.onversionchange = () => {
+        db.close();
+        db = null;
+      };
       resolve(db);
     };
-
-    request.onupgradeneeded = (event) => {
-      const database = event.target.result;
-      const upgradeTx = event.target.transaction;
-
-      // Labels store (non-destructive upgrades)
-      let labelsStore;
-      if (!database.objectStoreNames.contains('labels')) {
-        labelsStore = database.createObjectStore('labels', { keyPath: 'id' });
-      } else {
-        labelsStore = upgradeTx.objectStore('labels');
-      }
-      if (!labelsStore.indexNames.contains('fullId')) {
-        labelsStore.createIndex('fullId', 'fullId', { unique: false });
-      }
-      if (!labelsStore.indexNames.contains('culture')) {
-        labelsStore.createIndex('culture', 'culture', { unique: false });
-      }
-      if (!labelsStore.indexNames.contains('model')) {
-        labelsStore.createIndex('model', 'model', { unique: false });
-      }
-      if (!labelsStore.indexNames.contains('prefix')) {
-        labelsStore.createIndex('prefix', 'prefix', { unique: false });
-      }
-      if (!labelsStore.indexNames.contains('text')) {
-        labelsStore.createIndex('text', 'text', { unique: false });
-      }
-
-      // Metadata store
-      if (!database.objectStoreNames.contains('metadata')) {
-        database.createObjectStore('metadata', { keyPath: 'key' });
-      }
-
-      // Handles store
-      if (!database.objectStoreNames.contains('handles')) {
-        database.createObjectStore('handles', { keyPath: 'id' });
-      }
-
-      // SPEC-23: Catalog store (for virtual catalog)
-      let catalogStore;
-      if (!database.objectStoreNames.contains('catalog')) {
-        catalogStore = database.createObjectStore('catalog', { keyPath: 'id' });
-      } else {
-        catalogStore = upgradeTx.objectStore('catalog');
-      }
-      if (!catalogStore.indexNames.contains('culture')) {
-        catalogStore.createIndex('culture', 'culture', { unique: false });
-      }
-      if (!catalogStore.indexNames.contains('status')) {
-        catalogStore.createIndex('status', 'status', { unique: false });
-      }
-      if (!catalogStore.indexNames.contains('model')) {
-        catalogStore.createIndex('model', 'model', { unique: false });
-      }
-
-      // Keep stores aligned with main schema if worker triggers initial upgrade
-      if (!database.objectStoreNames.contains('builder_workspace')) {
-        const builderStore = database.createObjectStore('builder_workspace', { keyPath: 'id', autoIncrement: true });
-        builderStore.createIndex('labelId', 'labelId', { unique: false });
-        builderStore.createIndex('culture', 'culture', { unique: false });
-      }
-      if (!database.objectStoreNames.contains('extraction_sessions')) {
-        const extractionStore = database.createObjectStore('extraction_sessions', { keyPath: 'sessionId' });
-        extractionStore.createIndex('updatedAt', 'updatedAt', { unique: false });
-        extractionStore.createIndex('model', 'model', { unique: false });
-      }
+    request.onblocked = () => {
+      console.warn('[Indexer Worker] DB open blocked by another tab/upgrade.');
     };
   });
 }
@@ -111,7 +56,7 @@ function saveBatchFireAndForget(labels, affectedPairs = null) {
   if (!labels.length) return Promise.resolve(0);
   
   const writeStart = performance.now();
-  const promise = new Promise((resolve, reject) => {
+  const promise = new Promise((resolve) => {
     const tx = db.transaction('labels', 'readwrite', { durability: 'relaxed' });
     const store = tx.objectStore('labels');
 
@@ -131,8 +76,15 @@ function saveBatchFireAndForget(labels, affectedPairs = null) {
       resolve(labels.length);
     };
     tx.onerror = () => {
-      console.error('Batch save error:', tx.error);
-      resolve(0); // Don't reject - fire and forget
+      const err = tx.error;
+      const isQuota = err?.name === 'QuotaExceededError' || err?.code === 22;
+      self.postMessage({
+        type: 'DB_ERROR',
+        error: err?.message || 'Unknown DB error',
+        isQuota,
+        labelsLost: labels.length
+      });
+      resolve(0); // Keep fire-and-forget behavior
     };
   });
   
@@ -192,73 +144,15 @@ function saveBloomFilter(model, culture, buffer) {
  * Parse a single file and return labels array (pure CPU, no I/O blocking)
  */
 function parseFileContent(content, metadata) {
-  const { model, culture, prefix, sourcePath } = metadata;
-  const labels = [];
-  
-  const lines = content.split('\n');
-  const lineCount = lines.length;
-  
-  let currentLabel = null;
-  
-  for (let i = 0; i < lineCount; i++) {
-    const rawLine = lines[i];
-    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
-    
-    if (!line) continue;
-    
-    // Help line check (starts with " ;")
-    if (line.charCodeAt(0) === 32 && line.charCodeAt(1) === 59) {
-      if (currentLabel) {
-        const helpText = line.slice(2).trim();
-        if (helpText) {
-          currentLabel.help = currentLabel.help 
-            ? currentLabel.help + ' ' + helpText 
-            : helpText;
-        }
-      }
-      continue;
-    }
-    
-    if (currentLabel) {
-      labels.push(currentLabel);
-      currentLabel = null;
-    }
-    
-    const equalsIndex = line.indexOf('=');
-    if (equalsIndex > 0 && line.charCodeAt(0) !== 32) {
-      const labelId = line.slice(0, equalsIndex);
-      const text = line.slice(equalsIndex + 1);
-      
-      if (labelId && labelId.charCodeAt(0) !== 32) {
-        // SPEC-42: Pre-calculate normalized search target and tokens
-        const normalizedText = text.toLowerCase();
-        const normalizedId = labelId.toLowerCase();
-        const searchTarget = `${normalizedId} ${normalizedText}`.trim();
-
-        // Generate tokens for Native Inverted Index (multiEntry)
-        const tokens = [...new Set(searchTarget.split(/[\W_]+/).filter(t => t.length > 2))];
-
-        currentLabel = {
-          id: `${model}|${culture}|${prefix}|${labelId}`,
-          fullId: `@${prefix}:${labelId}`,
-          labelId,
-          text,
-          model,
-          culture,
-          prefix,
-          help: '', 
-          sourcePath,
-          s: searchTarget, // Pre-normalized search string
-          tokens: tokens   // Array for IndexedDB multiEntry index
-        };
-      }
-    }
+  const labels = self.SharedLabelParser.parseLabelFile(content, metadata);
+  for (let i = 0; i < labels.length; i++) {
+    const label = labels[i];
+    const normalizedText = (label.text || '').toLowerCase();
+    const normalizedId = (label.labelId || '').toLowerCase();
+    const searchTarget = `${normalizedId} ${normalizedText}`.trim();
+    label.s = searchTarget;
+    label.tokens = [...new Set(searchTarget.split(/[\W_]+/).filter((t) => t.length > 2))];
   }
-  
-  if (currentLabel) {
-    labels.push(currentLabel);
-  }
-  
   return labels;
 }
 
@@ -557,7 +451,22 @@ async function processFileFast(fileHandle, metadata) {
 
 // Worker message handler
 self.onmessage = async function(event) {
-  const { type, files, handle, content, metadata, isPriority, streamLabels, streamLimit } = event.data;
+  const { type, files, handle, content, metadata, isPriority, streamLabels, streamLimit, dbName, dbVersion } = event.data;
+
+  if (dbName && dbName !== runtimeDbName) {
+    runtimeDbName = dbName;
+    if (db) {
+      db.close();
+      db = null;
+    }
+  }
+  if (typeof dbVersion === 'number' && dbVersion !== runtimeDbVersion) {
+    runtimeDbVersion = dbVersion;
+    if (db) {
+      db.close();
+      db = null;
+    }
+  }
 
   switch (type) {
     case 'PROCESS_FILES_HANDLES':

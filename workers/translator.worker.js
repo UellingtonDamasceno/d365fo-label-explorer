@@ -54,13 +54,34 @@ function mapLocaleToM2M100(locale) {
   return 'en';
 }
 
-async function initTranslator() {
-  if (isReady || initInProgress) return;
+async function initTranslator(requestId = null) {
+  if (isReady) {
+    self.postMessage({
+      type: 'READY',
+      ...(requestId != null ? { id: requestId } : {}),
+      payload: { fallback: !translatorPipeline }
+    });
+    return;
+  }
+
+  if (initInProgress) {
+    while (initInProgress) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    self.postMessage({
+      type: 'READY',
+      ...(requestId != null ? { id: requestId } : {}),
+      payload: { fallback: !translatorPipeline }
+    });
+    return;
+  }
+
   initInProgress = true;
 
   try {
     self.postMessage({
       type: 'INIT_PROGRESS',
+      ...(requestId != null ? { id: requestId } : {}),
       payload: { progress: 5, message: 'Preparing local translation engine...' }
     });
 
@@ -79,6 +100,7 @@ async function initTranslator() {
           const status = progressEvent?.status || 'Downloading model...';
           self.postMessage({
             type: 'INIT_PROGRESS',
+            ...(requestId != null ? { id: requestId } : {}),
             payload: { progress, message: status }
           });
         }
@@ -92,12 +114,13 @@ async function initTranslator() {
     initInProgress = false;
     self.postMessage({
       type: 'READY',
+      ...(requestId != null ? { id: requestId } : {}),
       payload: { fallback: !translatorPipeline }
     });
   }
 }
 
-async function translateJobs(jobs = []) {
+async function translateJobs(jobs = [], requestId = null) {
   const translations = [];
   const total = jobs.length;
 
@@ -148,6 +171,7 @@ async function translateJobs(jobs = []) {
     if ((i + 1) % 5 === 0 || i === total - 1) {
       self.postMessage({
         type: 'TRANSLATE_PROGRESS',
+        ...(requestId != null ? { id: requestId } : {}),
         payload: {
           completed: i + 1,
           total,
@@ -160,28 +184,30 @@ async function translateJobs(jobs = []) {
 
   self.postMessage({
     type: 'TRANSLATE_COMPLETE',
+    ...(requestId != null ? { id: requestId } : {}),
     payload: { translations }
   });
 }
 
 self.onmessage = async (event) => {
-  const { type, payload } = event.data || {};
+  const { type, payload, id } = event.data || {};
 
   try {
     if (type === 'INIT') {
-      await initTranslator();
+      await initTranslator(id);
       return;
     }
 
     if (type === 'TRANSLATE') {
       if (!isReady) {
-        await initTranslator();
+        await initTranslator(id);
       }
-      await translateJobs(payload?.jobs || []);
+      await translateJobs(payload?.jobs || [], id);
     }
   } catch (err) {
     self.postMessage({
       type: 'ERROR',
+      ...(id != null ? { id } : {}),
       payload: { message: err?.message || 'Translation worker failure' }
     });
   }

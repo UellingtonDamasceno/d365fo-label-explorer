@@ -2,50 +2,39 @@
  * Label File Merger Worker
  * SPEC-36: Merge multiple .label.txt files, deduplicate, detect conflicts, and sort alphabetically
  */
+importScripts('./utils/label-parser.js');
 
 /**
- * Parse a single .label.txt file content
+ * Migrate legacy inline help format:
+ * LabelId=Text;Help  -> LabelId=Text\n ;Help
+ */
+function migrateLegacyFormat(content) {
+  return String(content || '').replace(
+    /^([^=\s][^=]*)=(.+);([^;].*)$/gm,
+    (_, id, text, help) => `${id}=${text}\n ;${help}`
+  );
+}
+
+/**
+ * Parse a single .label.txt file content using shared parser.
  * @param {string} content - File content
+ * @param {string} fileName
  * @returns {Array<{id: string, text: string, helpText: string|null}>}
  */
-function parseLabelFile(content) {
-  const labels = [];
-  const lines = content.split(/\r?\n/);
-  
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith(';') || trimmed.startsWith('//')) continue;
-    
-    // Format: LabelId=Text [;Comment/HelpText]
-    const eqIndex = trimmed.indexOf('=');
-    if (eqIndex === -1) continue;
-    
-    const id = trimmed.substring(0, eqIndex).trim();
-    let rest = trimmed.substring(eqIndex + 1);
-    
-    // Extract HelpText (after semicolon, if present)
-    let text = rest;
-    let helpText = null;
-    
-    // Check for ;; (escaped semicolon) vs ; (help text separator)
-    const helpSeparatorIndex = rest.search(/(?<!;);(?!;)/);
-    if (helpSeparatorIndex !== -1) {
-      text = rest.substring(0, helpSeparatorIndex);
-      helpText = rest.substring(helpSeparatorIndex + 1).trim() || null;
-    }
-    
-    // Unescape semicolons
-    text = text.replace(/;;/g, ';').trim();
-    if (helpText) {
-      helpText = helpText.replace(/;;/g, ';').trim();
-    }
-    
-    if (id) {
-      labels.push({ id, text, helpText });
-    }
-  }
-  
-  return labels;
+function parseMergerFile(content, fileName) {
+  const migrated = migrateLegacyFormat(content);
+  const prefix = String(fileName || 'MERGE').split('.')[0] || 'MERGE';
+  const parsed = self.SharedLabelParser.parseLabelFile(migrated, {
+    model: 'merged',
+    culture: 'merged',
+    prefix,
+    sourcePath: fileName || ''
+  });
+  return parsed.map((label) => ({
+    id: label.labelId,
+    text: label.text || '',
+    helpText: label.help || null
+  }));
 }
 
 /**
@@ -54,23 +43,12 @@ function parseLabelFile(content) {
  * @returns {string}
  */
 function serializeLabelFile(labels) {
-  const lines = [];
-  
-  for (const label of labels) {
-    // Escape semicolons in text
-    let text = (label.text || '').replace(/;/g, ';;');
-    let line = `${label.id}=${text}`;
-    
-    // Add help text if present
-    if (label.helpText) {
-      const escapedHelp = label.helpText.replace(/;/g, ';;');
-      line += `;${escapedHelp}`;
-    }
-    
-    lines.push(line);
-  }
-  
-  return lines.join('\n');
+  const normalized = (labels || []).map((label) => ({
+    labelId: label.id || '',
+    text: label.text || '',
+    help: label.helpText || ''
+  }));
+  return self.SharedLabelParser.serializeLabelFile(normalized);
 }
 
 /**
@@ -131,10 +109,10 @@ self.onmessage = async function(e) {
       // payload: { files: Array<{name: string, content: string}> }
       const { files } = payload;
       const parsed = [];
-      
+
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
-        const labels = parseLabelFile(file.content);
+        const labels = parseMergerFile(file.content, file.name);
         parsed.push({
           name: file.name,
           labels,

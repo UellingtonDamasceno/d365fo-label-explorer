@@ -12,6 +12,8 @@ import { copyToClipboard } from './utils/clipboard.js';
 import { showSuccess, showError, showInfo } from './utils/toast.js';
 import { getLanguageFlag, formatLanguageDisplay, setDisplayLocale, buildPriorityLanguages, pickAvailablePriorityLanguages } from './utils/languages.js';
 import { setLanguage, t, updateInterfaceText, getCurrentLanguage } from './utils/translations.js';
+import { FLAGS } from './utils/flags.js';
+import { withFeatureError, ManagedWorker } from './utils/error-boundary.js';
 
 // Application state
 const state = {
@@ -424,7 +426,6 @@ function cacheElements() {
     builderItemsContainer: document.getElementById('builder-items-list'),
     btnBuilderDownload: document.getElementById('btn-builder-download'),
     btnBuilderFinish: document.getElementById('btn-builder-finish'),
-    chkBackgroundIndexing: document.getElementById('chk-background-indexing'),
     
     // SPEC-32: New Label Modal
     newLabelModal: document.getElementById('new-label-modal'),
@@ -489,7 +490,8 @@ function cacheElements() {
     extractorResults: document.getElementById('extractor-results'),
     extractorAutoSave: document.getElementById('extractor-auto-save'),
     btnExtractorAddAll: document.getElementById('btn-extractor-add-all'),
-    btnExtractorApply: document.getElementById('btn-extractor-apply')
+    btnExtractorApply: document.getElementById('btn-extractor-apply'),
+    btnExtractorRollback: document.getElementById('btn-extractor-rollback')
   };
 }
 
@@ -661,6 +663,7 @@ function setupEventListeners() {
   elements.btnExtractorStart?.addEventListener('click', handleExtractorStartScan);
   elements.btnExtractorAddAll?.addEventListener('click', handleExtractorAddAllToBuilder);
   elements.btnExtractorApply?.addEventListener('click', handleExtractorApplyChanges);
+  elements.btnExtractorRollback?.addEventListener('click', handleExtractorRollback);
   
   // Keyboard shortcuts
   document.addEventListener('keydown', handleKeyboardShortcuts);
@@ -1934,6 +1937,14 @@ async function indexFilesWithWorkers(fileTasks, isPriority = false, options = {}
             }
             updateProgress();
             break;
+
+          case 'DB_ERROR':
+            if (e.data?.isQuota) {
+              showError('Browser storage is full. Part of the indexed data was not saved.');
+            } else {
+              console.error('Worker DB error:', e.data?.error, `(${e.data?.labelsLost || 0} labels lost)`);
+            }
+            break;
             
           case 'PRIORITY_DONE':
           case 'COMPLETE':
@@ -1969,7 +1980,9 @@ async function indexFilesWithWorkers(fileTasks, isPriority = false, options = {}
         files: workerFiles,
         isPriority,
         streamLabels,
-        streamLimit: streamLimitPerWorker
+        streamLimit: streamLimitPerWorker,
+        dbName: db.DB_NAME,
+        dbVersion: db.DB_VERSION
       });
     });
     
@@ -2131,6 +2144,14 @@ async function handleStartIndexing() {
             }
             updateProgress();
             break;
+
+          case 'DB_ERROR':
+            if (e.data?.isQuota) {
+              showError('Browser storage is full. Part of the indexed data was not saved.');
+            } else {
+              console.error('Worker DB error:', e.data?.error, `(${e.data?.labelsLost || 0} labels lost)`);
+            }
+            break;
             
           case 'FILE_COMPLETE':
             // Legacy: Per-file progress (kept for compatibility)
@@ -2179,7 +2200,9 @@ async function handleStartIndexing() {
       // SPEC-21: Pass FileHandles to Worker with macro-batching
       worker.postMessage({
         type: 'PROCESS_FILES_HANDLES',
-        files: workerFiles
+        files: workerFiles,
+        dbName: db.DB_NAME,
+        dbVersion: db.DB_VERSION
       });
     });
     
@@ -2252,50 +2275,51 @@ async function handleStartIndexing() {
  * Build search index using streaming from IndexedDB
  * Avoids loading all labels into memory at once
  */
-async function buildSearchIndexStreaming() {
+async function buildSearchIndexStreaming(onProgress = null) {
   const CHUNK_SIZE = 10000;
-  let offset = 0;
-  let hasMore = true;
-  
-  // Use cursor-based streaming from IndexedDB
   const dbInstance = await db.initDB();
-  
+
   return new Promise((resolve, reject) => {
     const tx = dbInstance.transaction('labels', 'readonly');
     const store = tx.objectStore('labels');
     const request = store.openCursor();
     let chunk = [];
     let totalIndexed = 0;
-    
+
     request.onsuccess = (event) => {
       const cursor = event.target.result;
-      
-      if (cursor) {
-        chunk.push(cursor.value);
-        
-        // Index in chunks to avoid memory pressure
-        if (chunk.length >= CHUNK_SIZE) {
-          searchService.indexAll(chunk);
-          totalIndexed += chunk.length;
-          chunk = [];
-          
-          // Update progress
-          elements.indexingStatus.textContent = `${t('building_index')} (${totalIndexed.toLocaleString()})`;
-        }
-        
-        cursor.continue();
-      } else {
-        // Final chunk
+
+      if (!cursor) {
         if (chunk.length > 0) {
           searchService.indexAll(chunk);
           totalIndexed += chunk.length;
         }
-        
+        if (onProgress) {
+          onProgress(totalIndexed);
+        } else if (elements.indexingStatus) {
+          elements.indexingStatus.textContent = `${t('building_index')} (${totalIndexed.toLocaleString()})`;
+        }
         console.log(`📊 Search index built: ${totalIndexed} labels indexed`);
-        resolve();
+        resolve(totalIndexed);
+        return;
       }
+
+      chunk.push(cursor.value);
+      if (chunk.length >= CHUNK_SIZE) {
+        searchService.indexAll(chunk);
+        totalIndexed += chunk.length;
+        chunk = [];
+
+        if (onProgress) {
+          onProgress(totalIndexed);
+        } else if (elements.indexingStatus) {
+          elements.indexingStatus.textContent = `${t('building_index')} (${totalIndexed.toLocaleString()})`;
+        }
+      }
+
+      cursor.continue();
     };
-    
+
     request.onerror = () => reject(request.error);
   });
 }
@@ -2305,48 +2329,8 @@ async function buildSearchIndexStreaming() {
  * Same as buildSearchIndexStreaming but updates splash instead of indexingStatus
  */
 async function buildSearchIndexStreamingWithSplash() {
-  const CHUNK_SIZE = 10000;
-  
-  // Use cursor-based streaming from IndexedDB
-  const dbInstance = await db.initDB();
-  
-  return new Promise((resolve, reject) => {
-    const tx = dbInstance.transaction('labels', 'readonly');
-    const store = tx.objectStore('labels');
-    const request = store.openCursor();
-    let chunk = [];
-    let totalIndexed = 0;
-    
-    request.onsuccess = (event) => {
-      const cursor = event.target.result;
-      
-      if (cursor) {
-        chunk.push(cursor.value);
-        
-        // Index in chunks to avoid memory pressure
-        if (chunk.length >= CHUNK_SIZE) {
-          searchService.indexAll(chunk);
-          totalIndexed += chunk.length;
-          chunk = [];
-          
-          // Update splash progress
-          updateSplashStatus(`Building search index (${totalIndexed.toLocaleString()} indexed)...`);
-        }
-        
-        cursor.continue();
-      } else {
-        // Final chunk
-        if (chunk.length > 0) {
-          searchService.indexAll(chunk);
-          totalIndexed += chunk.length;
-        }
-        
-        console.log(`📊 Search index built: ${totalIndexed} labels indexed (streaming)`);
-        resolve();
-      }
-    };
-    
-    request.onerror = () => reject(request.error);
+  return buildSearchIndexStreaming((totalIndexed) => {
+    updateSplashStatus(`Building search index (${totalIndexed.toLocaleString()} indexed)...`);
   });
 }
 
@@ -4138,6 +4122,7 @@ const builderState = {
   lastDownloadedSignature: '',
   undoApplying: false
 };
+let managedTranslatorWorker = null;
 
 function applyBuilderDirectSaveVisualState() {
   const modalContent = elements.builderModal?.querySelector('.builder-modal-content');
@@ -5075,11 +5060,18 @@ async function handleExportGenerate() {
       task.message = t('export_translating');
       updateBackgroundTasksHeader();
       
-      await initializeTranslatorWorker();
+      const initResult = await initializeTranslatorWorker();
+      if (FLAGS.USE_MANAGED_TRANSLATOR_WORKER && initResult === null && !builderState.translatorReady) {
+        throw new Error(t('ai_translation_error'));
+      }
+
       const result = await requestTranslations(jobs, (prog) => {
         task.progress = Math.round(10 + prog * 60);
         updateBackgroundTasksHeader();
       });
+      if (!result) {
+        throw new Error(t('ai_translation_error'));
+      }
 
       const translatedItems = result?.translations || [];
       for (const item of translatedItems) {
@@ -5272,8 +5264,15 @@ async function buildExportLabelsWithOptionalTranslations(baseLabels) {
   updateBuilderTranslateProgress(0, t('builder_export_translating'));
   setAiTranslationHeaderStatus(true, t('builder_export_translating'));
   try {
-    await initializeTranslatorWorker();
+    const initResult = await initializeTranslatorWorker();
+    if (FLAGS.USE_MANAGED_TRANSLATOR_WORKER && initResult === null && !builderState.translatorReady) {
+      throw new Error(t('ai_translation_error'));
+    }
+
     const result = await requestTranslations(jobs);
+    if (!result) {
+      throw new Error(t('ai_translation_error'));
+    }
     const translatedItems = result?.translations || [];
     const sourceByKey = new Map(
       validSourceLabels.map((label) => [`${label.labelId}::${label.culture}`, label])
@@ -5316,8 +5315,7 @@ async function buildExportLabelsWithOptionalTranslations(baseLabels) {
 
 function normalizeLabelLineValue(value) {
   return String(value || '')
-    .replace(/\r?\n/g, ' ')
-    .replace(/;/g, ';;');
+    .replace(/\r?\n/g, ' ');
 }
 
 function buildLabelFileContent(labels) {
@@ -5352,7 +5350,7 @@ function parseLabelFileContent(content) {
 
     if (line.startsWith(' ;')) {
       if (current) {
-        const helpPart = line.slice(2).trim();
+        const helpPart = line.slice(2).trim().replace(/;;/g, ';');
         if (helpPart) {
           current.helpText = current.helpText ? `${current.helpText} ${helpPart}` : helpPart;
         }
@@ -5365,7 +5363,7 @@ function parseLabelFileContent(content) {
       if (current) entries.push(current);
       current = {
         labelId: line.slice(0, equalsIndex).trim(),
-        text: line.slice(equalsIndex + 1),
+        text: line.slice(equalsIndex + 1).replace(/;;/g, ';'),
         helpText: ''
       };
       continue;
@@ -5614,7 +5612,53 @@ function toWorkerLang(culture) {
   return 'en';
 }
 
+function resetTranslatorState() {
+  builderState.translating = false;
+  builderState.translatorReady = false;
+  builderState.pendingInit = null;
+  builderState.pendingTranslate = null;
+}
+
+function getManagedTranslatorWorker() {
+  if (managedTranslatorWorker?.isActive) {
+    return managedTranslatorWorker;
+  }
+
+  if (builderState.translatorWorker) {
+    try {
+      builderState.translatorWorker.terminate();
+    } catch (_) {}
+    builderState.translatorWorker = null;
+  }
+
+  managedTranslatorWorker = new ManagedWorker('./workers/translator.worker.js', { type: 'module' })
+    .start()
+    .onProgress((message) => {
+      const { type, payload } = message || {};
+      if (type === 'INIT_PROGRESS') {
+        builderState.translating = true;
+        updateBuilderTranslateProgress(payload?.progress || 0, payload?.message || t('ai_status_downloading'));
+        return;
+      }
+      if (type === 'TRANSLATE_PROGRESS') {
+        const progress = payload?.progress || 0;
+        const progressLabel = t('ai_translation_progress', {
+          current: payload?.completed || 0,
+          total: payload?.total || 0
+        });
+        updateBuilderTranslateProgress(progress, progressLabel);
+      }
+    });
+
+  return managedTranslatorWorker;
+}
+
 function ensureTranslatorWorker() {
+  if (managedTranslatorWorker?.isActive) {
+    managedTranslatorWorker.terminate();
+    managedTranslatorWorker = null;
+  }
+
   if (builderState.translatorWorker) return builderState.translatorWorker;
 
   builderState.translatorWorker = new Worker('./workers/translator.worker.js', { type: 'module' });
@@ -5665,6 +5709,11 @@ function ensureTranslatorWorker() {
         builderState.pendingTranslate = null;
       }
       builderState.translating = false;
+      builderState.translatorReady = false;
+      try {
+        builderState.translatorWorker?.terminate();
+      } catch (_) {}
+      builderState.translatorWorker = null;
       updateBuilderTranslateProgress(0, '');
       showError(error.message);
     }
@@ -5673,6 +5722,7 @@ function ensureTranslatorWorker() {
   builderState.translatorWorker.onerror = (event) => {
     console.error('Translator worker error:', event);
     builderState.translating = false;
+    builderState.translatorReady = false;
     if (builderState.pendingInit) {
       builderState.pendingInit.reject(new Error('Translator worker failed'));
       builderState.pendingInit = null;
@@ -5681,6 +5731,10 @@ function ensureTranslatorWorker() {
       builderState.pendingTranslate.reject(new Error('Translator worker failed'));
       builderState.pendingTranslate = null;
     }
+    try {
+      builderState.translatorWorker?.terminate();
+    } catch (_) {}
+    builderState.translatorWorker = null;
     updateBuilderTranslateProgress(0, '');
     showError(t('ai_translation_error'));
   };
@@ -5689,6 +5743,26 @@ function ensureTranslatorWorker() {
 }
 
 function initializeTranslatorWorker() {
+  if (FLAGS.USE_MANAGED_TRANSLATOR_WORKER) {
+    if (builderState.translatorReady) {
+      return Promise.resolve();
+    }
+    return withFeatureError('AI Translation Init', async () => {
+      const worker = getManagedTranslatorWorker();
+      const response = await worker.send(
+        'INIT',
+        {},
+        {
+          resolveTypes: ['READY'],
+          progressTypes: ['INIT_PROGRESS'],
+          errorTypes: ['ERROR']
+        }
+      );
+      builderState.translatorReady = true;
+      return response?.payload;
+    }, { fallback: null, showToast: false });
+  }
+
   if (builderState.translatorReady) {
     return Promise.resolve();
   }
@@ -5709,6 +5783,22 @@ function initializeTranslatorWorker() {
 }
 
 function requestTranslations(jobs) {
+  if (FLAGS.USE_MANAGED_TRANSLATOR_WORKER) {
+    return withFeatureError('AI Translation Request', async () => {
+      const worker = getManagedTranslatorWorker();
+      const response = await worker.send(
+        'TRANSLATE',
+        { payload: { jobs } },
+        {
+          resolveTypes: ['TRANSLATE_COMPLETE'],
+          progressTypes: ['TRANSLATE_PROGRESS'],
+          errorTypes: ['ERROR']
+        }
+      );
+      return response?.payload || { translations: [] };
+    }, { fallback: null, showToast: false });
+  }
+
   if (builderState.pendingTranslate) {
     return Promise.reject(new Error('Translation already in progress'));
   }
@@ -5825,8 +5915,15 @@ async function handleBuilderAutoTranslate() {
   updateBuilderTranslateProgress(0, t('ai_translation_initializing'));
 
   try {
-    await initializeTranslatorWorker();
+    const initResult = await initializeTranslatorWorker();
+    if (FLAGS.USE_MANAGED_TRANSLATOR_WORKER && initResult === null && !builderState.translatorReady) {
+      throw new Error(t('ai_translation_error'));
+    }
+
     const result = await requestTranslations(jobs);
+    if (!result) {
+      throw new Error(t('ai_translation_error'));
+    }
     const translatedItems = result?.translations || [];
 
     const labelByKey = new Map(
@@ -5845,6 +5942,13 @@ async function handleBuilderAutoTranslate() {
     showSuccess(t('ai_translation_done_toast', { count: translatedItems.length }));
   } catch (err) {
     console.error('AI translation failed:', err);
+    if (FLAGS.USE_MANAGED_TRANSLATOR_WORKER) {
+      try {
+        managedTranslatorWorker?.terminate();
+      } catch (_) {}
+      managedTranslatorWorker = null;
+      resetTranslatorState();
+    }
     showError(err.message || t('ai_translation_error'));
     updateBuilderTranslateProgress(0, '');
   } finally {

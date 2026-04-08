@@ -102,7 +102,7 @@ export async function refreshGlobalBloomFilter() {
     };
     
     searchWorker.addEventListener('message', handler);
-    searchWorker.postMessage({ type: 'BUILD_GLOBAL_FILTER', id });
+    searchWorker.postMessage({ type: 'BUILD_GLOBAL_FILTER', id, dbName: DB_NAME, dbVersion: DB_VERSION });
   });
 }
 
@@ -119,6 +119,7 @@ const pendingSearches = new Map();
 
 // LRU Cache for loaded models/languages
 const modelCache = new Map(); // key: "model|culture" -> { lastAccess, labelCount }
+const indexedIds = new Set(); // id set for de-duplication in FlexSearch
 const MAX_MODELS_IN_MEMORY = 5; // Configurable via settings
 const PRIORITY_LANGUAGES = ['en-US']; // Warm start languages
 
@@ -198,7 +199,7 @@ function workerSearch(type, query, options) {
     const id = ++searchRequestId;
     pendingSearches.set(id, { resolve, reject });
     
-    searchWorker.postMessage({ type, id, query, options });
+    searchWorker.postMessage({ type, id, query, options, dbName: DB_NAME, dbVersion: DB_VERSION });
   });
 }
 
@@ -218,6 +219,7 @@ export async function initSearch() {
   });
   
   modelCache.clear();
+  indexedIds.clear();
   indexedLabelCount = 0;
   
   // SPEC-37: Initialize search worker
@@ -299,17 +301,29 @@ export function indexLabels(labels) {
     initSearch();
   }
 
+  const addUniqueDoc = (label) => {
+    if (!label?.id || indexedIds.has(label.id)) {
+      return false;
+    }
+
+    const doc = {
+      ...label,
+      searchTarget: `${label.labelId} ${label.text} ${label.help || ''} ${label.fullId}`
+    };
+    searchIndex.add(doc);
+    indexedIds.add(label.id);
+    return true;
+  };
+
   // SPEC-37: Process in micro-batches with yielding for large batches
   const CHUNK_SIZE = 500;
   
   if (labels.length <= CHUNK_SIZE) {
     // Small batch: process immediately
     for (const label of labels) {
-      const doc = {
-        ...label,
-        searchTarget: `${label.labelId} ${label.text} ${label.help || ''} ${label.fullId}`
-      };
-      searchIndex.add(doc);
+      if (!addUniqueDoc(label)) {
+        continue;
+      }
       
       const cacheKey = `${label.model}|${label.culture}`;
       if (!modelCache.has(cacheKey)) {
@@ -331,14 +345,14 @@ export function indexLabels(labels) {
   
   const processChunk = () => {
     const end = Math.min(processed + CHUNK_SIZE, labels.length);
+    let indexedInChunk = 0;
     
     for (let i = processed; i < end; i++) {
       const label = labels[i];
-      const doc = {
-        ...label,
-        searchTarget: `${label.labelId} ${label.text} ${label.help || ''} ${label.fullId}`
-      };
-      searchIndex.add(doc);
+      if (!addUniqueDoc(label)) {
+        continue;
+      }
+      indexedInChunk++;
       
       const cacheKey = `${label.model}|${label.culture}`;
       if (!modelCache.has(cacheKey)) {
@@ -352,8 +366,7 @@ export function indexLabels(labels) {
       }
     }
     
-    const chunkSize = end - processed;
-    indexedLabelCount += chunkSize;
+    indexedLabelCount += indexedInChunk;
     processed = end;
     
     // Yield to allow UI updates if more chunks remain
@@ -675,7 +688,10 @@ async function evictLRU() {
     
     // Remove labels from this model from FlexSearch
     if (oldest && oldest.ids) {
-      oldest.ids.forEach(id => searchIndex.remove(id));
+      oldest.ids.forEach((id) => {
+        searchIndex.remove(id);
+        indexedIds.delete(id);
+      });
     }
     modelCache.delete(oldestKey);
   }
@@ -773,11 +789,16 @@ async function loadModelIntoFlexSearch(model, culture) {
         const label = cursor.value;
         
         if (!culture || label.culture === culture) {
+          if (!label?.id || indexedIds.has(label.id)) {
+            cursor.continue();
+            return;
+          }
           const doc = {
             ...label,
             searchTarget: `${label.labelId} ${label.text} ${label.help || ''} ${label.fullId}`
           };
           searchIndex.add(doc);
+          indexedIds.add(label.id);
           loadedIds.push(label.id);
           count++;
         }
@@ -875,6 +896,7 @@ export function clearSearch() {
     searchIndex = null;
   }
   modelCache.clear();
+  indexedIds.clear();
   indexedLabelCount = 0;
   indexedCultures.clear(); // BUG-24: Reset tracked cultures
 }
@@ -945,11 +967,16 @@ export async function preloadPriorityLanguages(cultures = null) {
 
         if (cursor && count < maxPreload) {
           const label = cursor.value;
+          if (!label?.id || indexedIds.has(label.id)) {
+            cursor.continue();
+            return;
+          }
           const doc = {
             ...label,
             searchTarget: `${label.labelId} ${label.text} ${label.help || ''} ${label.fullId}`
           };
           searchIndex.add(doc);
+          indexedIds.add(label.id);
 
           const cacheKey = `${label.model}|${label.culture}`;
           if (!modelCache.has(cacheKey)) {

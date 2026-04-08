@@ -6,8 +6,12 @@
 
 importScripts('../utils/bloom-filter.js');
 
+// sync: core/db.js
 const DB_NAME = 'd365fo-labels';
+// sync: core/db.js
 const DB_VERSION = 10; // SPEC-42 Inverted Index
+let runtimeDbName = DB_NAME;
+let runtimeDbVersion = DB_VERSION;
 
 let db = null;
 
@@ -21,7 +25,7 @@ function openDB() {
       return;
     }
     
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    const request = indexedDB.open(runtimeDbName, runtimeDbVersion);
     request.onsuccess = () => {
       db = request.result;
       resolve(db);
@@ -223,7 +227,21 @@ async function batchSearch(query, cultures, options = {}) {
 
 // Message handler
 self.onmessage = async (e) => {
-  const { type, id, query, options } = e.data;
+  const { type, id, query, options, dbName, dbVersion } = e.data;
+  if (dbName && dbName !== runtimeDbName) {
+    runtimeDbName = dbName;
+    if (db) {
+      db.close();
+      db = null;
+    }
+  }
+  if (typeof dbVersion === 'number' && dbVersion !== runtimeDbVersion) {
+    runtimeDbVersion = dbVersion;
+    if (db) {
+      db.close();
+      db = null;
+    }
+  }
   const startTime = performance.now();
   
   try {
