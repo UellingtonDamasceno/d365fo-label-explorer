@@ -7,7 +7,7 @@
  */
 
 export const DB_NAME = 'd365fo-labels';
-export const DB_VERSION = 8; // Added sessions and backups stores creation logic
+export const DB_VERSION = 9; // Added search_indices and bloom_filters
 
 const STORES = {
   LABELS: 'labels',
@@ -17,7 +17,9 @@ const STORES = {
   BUILDER: 'builder_workspace',  // SPEC-32: Builder workspace
   EXTRACTION: 'extraction_sessions', // SPEC-34: Extractor pause/resume sessions
   SESSIONS: 'builder_sessions', // SPEC-32: Builder session history
-  BACKUPS: 'extraction_backups' // SPEC-34: Extractor rollback backups
+  BACKUPS: 'extraction_backups', // SPEC-34: Extractor rollback backups
+  SEARCH_INDICES: 'search_indices', // SPEC-42: Persisted FlexSearch indices
+  BLOOM_FILTERS: 'bloom_filters' // SPEC-42: Fast-fail bloom filters
 };
 
 let db = null;
@@ -138,6 +140,16 @@ export async function initDB() {
         const backupsStore = database.createObjectStore(STORES.BACKUPS, { keyPath: 'id' });
         backupsStore.createIndex('updatedAt', 'updatedAt', { unique: false });
         backupsStore.createIndex('model', 'model', { unique: false });
+      }
+
+      // SPEC-42: Search Indices store (FlexSearch exported data)
+      if (!database.objectStoreNames.contains(STORES.SEARCH_INDICES)) {
+        database.createObjectStore(STORES.SEARCH_INDICES, { keyPath: 'id' }); // id: model|||culture|||flexSearchKey
+      }
+
+      // SPEC-42: Bloom Filters store
+      if (!database.objectStoreNames.contains(STORES.BLOOM_FILTERS)) {
+        database.createObjectStore(STORES.BLOOM_FILTERS, { keyPath: 'id' }); // id: model|||culture
       }
     };
   });

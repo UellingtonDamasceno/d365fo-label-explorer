@@ -1,12 +1,13 @@
 /**
  * Search Worker for D365FO Label Explorer
  * SPEC-37: Offloads IndexedDB cursor operations from Main Thread
- * 
- * This worker handles heavy search operations to prevent UI jank
+ * SPEC-42: Bloom Filter Integration
  */
 
+importScripts('../utils/bloom-filter.js');
+
 const DB_NAME = 'd365fo-labels';
-const DB_VERSION = 8;
+const DB_VERSION = 9; // SPEC-42
 
 let db = null;
 
@@ -29,6 +30,40 @@ function openDB() {
   });
 }
 
+// SPEC-42: Cache loaded Bloom Filters in worker memory
+const bloomFiltersCache = new Map();
+
+/**
+ * Load Bloom Filter from IndexedDB
+ */
+async function loadBloomFilter(model, culture) {
+  if (!model || !culture) return null; // Needs specific pair
+  const key = `${model}|||${culture}`;
+  
+  if (bloomFiltersCache.has(key)) {
+    return bloomFiltersCache.get(key);
+  }
+  
+  const database = await openDB();
+  const tx = database.transaction('bloom_filters', 'readonly');
+  const store = tx.objectStore('bloom_filters');
+  
+  return new Promise((resolve) => {
+    const request = store.get(key);
+    request.onsuccess = () => {
+      if (request.result && request.result.buffer) {
+        const filter = new BloomFilter({ buffer: request.result.buffer });
+        bloomFiltersCache.set(key, filter);
+        resolve(filter);
+      } else {
+        bloomFiltersCache.set(key, null); // Mark as not found to avoid retries
+        resolve(null);
+      }
+    };
+    request.onerror = () => resolve(null);
+  });
+}
+
 /**
  * Search IndexedDB with cursor (heavy operation moved off main thread)
  * @param {string} query - Search query
@@ -36,8 +71,20 @@ function openDB() {
  * @returns {Promise<Array>}
  */
 async function searchIndexedDB(query, options = {}) {
-  const { culture, model, limit = 100, exactMatch = false } = options;
+  const { culture, model, limit = 5000, exactMatch = false, offset = 0 } = options; // SPEC-42: Pagination & Limit
   const lowerQuery = query?.toLowerCase() || '';
+  
+  // SPEC-42: Fast-fail using Bloom Filter
+  if (lowerQuery && culture && model) {
+    const filter = await loadBloomFilter(model, culture);
+    if (filter) {
+      const passesFilter = filter.hasText(lowerQuery);
+      if (!passesFilter) {
+        console.log(`🚫 Bloom Filter rejected search for "${lowerQuery}" in ${model}|${culture}`);
+        return []; // Fast-fail!
+      }
+    }
+  }
   
   const database = await openDB();
   const tx = database.transaction('labels', 'readonly');
@@ -47,6 +94,7 @@ async function searchIndexedDB(query, options = {}) {
     const results = [];
     let request;
     let scannedCount = 0;
+    let skippedCount = 0;
     
     // Use index if filtering by culture or model
     if (culture) {
@@ -77,17 +125,26 @@ async function searchIndexedDB(query, options = {}) {
         
         // Apply text search if query provided
         if (matches && lowerQuery) {
-          const textMatch = 
-            label.text?.toLowerCase().includes(lowerQuery) ||
-            label.fullId?.toLowerCase().includes(lowerQuery) ||
-            label.labelId?.toLowerCase().includes(lowerQuery) ||
-            label.help?.toLowerCase().includes(lowerQuery);
-          
-          matches = textMatch;
+          if (exactMatch) {
+            matches = label.text?.toLowerCase() === lowerQuery || 
+                      label.labelId?.toLowerCase() === lowerQuery;
+          } else {
+            const textMatch = 
+              label.text?.toLowerCase().includes(lowerQuery) ||
+              label.fullId?.toLowerCase().includes(lowerQuery) ||
+              label.labelId?.toLowerCase().includes(lowerQuery) ||
+              label.help?.toLowerCase().includes(lowerQuery);
+            
+            matches = textMatch;
+          }
         }
         
         if (matches) {
-          results.push(label);
+          if (skippedCount < offset) {
+            skippedCount++;
+          } else {
+            results.push(label);
+          }
         }
         
         cursor.continue();
@@ -194,6 +251,15 @@ self.onmessage = async (e) => {
       case 'COUNT':
         result = await getIndexCount(options.indexName, options.value);
         break;
+
+      case 'BUILD_GLOBAL_FILTER':
+        const count = await rebuildGlobalBloomFilter();
+        self.postMessage({
+          type: 'FILTER_BUILT',
+          id,
+          count
+        });
+        return; // Message already sent
         
       default:
         throw new Error(`Unknown search type: ${type}`);
@@ -216,3 +282,55 @@ self.onmessage = async (e) => {
     });
   }
 };
+
+/**
+ * SPEC-42: Reconstruct Global Bloom Filter from all labels
+ */
+async function rebuildGlobalBloomFilter() {
+  console.log('🌍 Rebuilding Global Bloom Filter (2M items capacity)...');
+  const startTime = performance.now();
+  
+  const filter = new BloomFilter({ expectedItems: 2000000, falsePositiveRate: 0.01 });
+  const database = await openDB();
+  const tx = database.transaction('labels', 'readonly');
+  const store = tx.objectStore('labels');
+  
+  return new Promise((resolve, reject) => {
+    const request = store.openCursor();
+    let count = 0;
+    
+    request.onsuccess = async (event) => {
+      const cursor = event.target.result;
+      if (cursor) {
+        const label = cursor.value;
+        filter.addText(label.text);
+        filter.addText(label.labelId);
+        filter.addText(label.help);
+        
+        count++;
+        if (count % 50000 === 0) {
+          self.postMessage({ type: 'PROGRESS', phase: 'rebuilding_filter', scanned: count });
+        }
+        cursor.continue();
+      } else {
+        // Save the finished filter
+        const saveTx = database.transaction('bloom_filters', 'readwrite');
+        const saveStore = saveTx.objectStore('bloom_filters');
+        
+        saveStore.put({
+          id: 'global|||all',
+          model: 'global',
+          culture: 'all',
+          buffer: filter.export()
+        });
+        
+        saveTx.oncomplete = () => {
+          const elapsed = performance.now() - startTime;
+          console.log(`✅ Global Bloom Filter rebuilt: ${count} labels in ${elapsed.toFixed(0)}ms`);
+          resolve(count);
+        };
+      }
+    };
+    request.onerror = () => reject(request.error);
+  });
+}

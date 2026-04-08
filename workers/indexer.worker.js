@@ -1,24 +1,52 @@
 /**
  * Indexer Worker - SPEC-23: Smart Batching Architecture
- * 
- * STRATEGY: "Search-First, Index-Later"
- * 1. Process priority languages first (en-US, pt-BR, pt-PT, es-CO)
- * 2. Fire-and-forget batch writes of 5000 labels (non-blocking)
- * 3. Emit PRIORITY_DONE when priority languages complete
- * 4. Continue background indexing at lower priority
- * 
- * KEY: Never await DB writes during parsing - fire and continue
+ * SPEC-42: Bloom Filter & FlexSearch Export
  */
 
-import { DB_NAME, DB_VERSION } from '../core/db.js';
+// SPEC-42: Use importScripts for global libraries (more compatible than ESM in workers)
+importScripts('../libs/flexsearch.bundle.min.js');
+importScripts('../utils/bloom-filter.js');
+
+const DB_NAME = 'd365fo-labels';
+const DB_VERSION = 9; // SPEC-42
 
 // Smart Batching Constants
 const BATCH_SIZE = 5000;          // Write every 5000 labels
 const FILE_CONCURRENCY = 3;       // Reduced to lower contention
 const PROGRESS_INTERVAL = 10;     // Report every N files
 
-// Priority languages (fast path)
-const PRIORITY_CULTURES = ['en-US', 'pt-BR', 'pt-PT', 'es-CO'];
+/**
+ * Manual parser for label files (replaces ESM import)
+ */
+function parseLabelFile(content, metadata) {
+  const { model, culture, prefix, sourcePath } = metadata;
+  const labels = [];
+  
+  // Basic Regex for label lines: LabelId=LabelText
+  const labelRegex = /^([^=]+)=(.*)$/gm;
+  let match;
+  
+  while ((match = labelRegex.exec(content)) !== null) {
+    const labelId = match[1].trim();
+    const text = match[2].trim();
+    
+    if (labelId) {
+      labels.push({
+        id: `${model}|${culture}|${labelId}`,
+        fullId: `@${prefix}:${labelId}`,
+        labelId,
+        text,
+        model,
+        culture,
+        prefix,
+        help: '', // Basic parser doesn't extract help descriptions
+        sourcePath
+      });
+    }
+  }
+  
+  return labels;
+}
 
 let db = null;
 let pendingWrites = [];           // Track fire-and-forget promises
@@ -155,6 +183,45 @@ async function flushPendingWrites() {
 }
 
 /**
+ * SPEC-42: Save exported FlexSearch data to IndexedDB
+ */
+function saveSearchIndexExport(model, culture, key, data) {
+  const promise = new Promise((resolve) => {
+    const tx = db.transaction('search_indices', 'readwrite', { durability: 'relaxed' });
+    const store = tx.objectStore('search_indices');
+    store.put({
+      id: `${model}|||${culture}|||${key}`,
+      model,
+      culture,
+      key,
+      data
+    });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve(); // Fire and forget
+  });
+  pendingWrites.push(promise);
+}
+
+/**
+ * SPEC-42: Save Bloom Filter buffer to IndexedDB
+ */
+function saveBloomFilter(model, culture, buffer) {
+  const promise = new Promise((resolve) => {
+    const tx = db.transaction('bloom_filters', 'readwrite', { durability: 'relaxed' });
+    const store = tx.objectStore('bloom_filters');
+    store.put({
+      id: `${model}|||${culture}`,
+      model,
+      culture,
+      buffer
+    });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve(); // Fire and forget
+  });
+  pendingWrites.push(promise);
+}
+
+/**
  * Parse a single file and return labels array (pure CPU, no I/O blocking)
  */
 function parseFileContent(content, metadata) {
@@ -265,6 +332,9 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
   let totalLabels = 0;
   let errors = [];
   
+  // SPEC-42: Global Bloom Filter for cross-model searches
+  const globalBloomFilter = new BloomFilter({ expectedItems: 1000000, falsePositiveRate: 0.01 });
+  
   // Smart batch buffer (max 5000 labels)
   let batchBuffer = [];
   const pairStats = new Map();
@@ -282,6 +352,12 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
     const culture = fileTask.metadata.culture;
     const key = `${model}|||${culture}`;
     if (!pairStats.has(key)) {
+        // SPEC-42: Initialize Bloom Filter and FlexSearch for this pair
+        const flexIndex = new self.FlexSearch.Document({
+          document: { id: 'id', index: ['searchTarget'], store: true },
+          tokenize: 'forward', resolution: 9, cache: true
+        });
+        
         pairStats.set(key, {
           key,
           model,
@@ -292,7 +368,9 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
           totalProcessingMs: 0,
           totalBytes: 0,
           firstStartedAt: null,
-          lastEndedAt: null
+          lastEndedAt: null,
+          bloomFilter: new BloomFilter({ expectedItems: 50000, falsePositiveRate: 0.01 }),
+          flexIndex: flexIndex
         });
       }
       pairStats.get(key).fileCount += 1;
@@ -305,6 +383,8 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
     
     for (const result of results) {
       processedFiles++;
+      const pairKey = `${result.model}|||${result.culture}`;
+      const pairEntry = pairStats.get(pairKey);
       
       if (result.success && result.labels.length > 0) {
         if (streamRemaining > 0 && isPriority) {
@@ -318,9 +398,27 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
           }
         }
 
-        // Add to batch buffer
+        // Add to batch buffer and populate Search Structures
         for (const label of result.labels) {
           batchBuffer.push(label);
+          
+          // SPEC-42: Populate Global Bloom Filter
+          globalBloomFilter.addText(label.text);
+          globalBloomFilter.addText(label.labelId);
+          globalBloomFilter.addText(label.help);
+
+          if (pairEntry) {
+            // SPEC-42: Populate Local Bloom Filter
+            pairEntry.bloomFilter.addText(label.text);
+            pairEntry.bloomFilter.addText(label.labelId);
+            pairEntry.bloomFilter.addText(label.help);
+            
+            // SPEC-42: Populate FlexSearch
+            pairEntry.flexIndex.add({
+              ...label,
+              searchTarget: `${label.labelId} ${label.text} ${label.help || ''} ${label.fullId}`
+            });
+          }
         }
         
         // SPEC-23: Fire-and-forget when batch is full
@@ -338,8 +436,6 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
         errors.push({ file: result.file, error: result.error });
       }
 
-      const pairKey = `${result.model}|||${result.culture}`;
-      const pairEntry = pairStats.get(pairKey);
       if (pairEntry) {
         pairEntry.processedFiles += 1;
         pairEntry.labelCount += result.success ? result.labels.length : 0;
@@ -363,7 +459,8 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
         processedFiles,
         totalFiles: files.length,
         totalLabels: totalLabels + batchBuffer.length,
-        pairProgress: [...pairStats.values()],
+        // SPEC-42: Don't send complex objects over postMessage
+        pairProgress: [...pairStats.values()].map(({bloomFilter, flexIndex, ...rest}) => rest),
         isPriority,
         phase: 'indexing'
       });
@@ -381,6 +478,32 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
     batchBuffer = [];
   }
   
+  // SPEC-42: Export FlexSearch indices and save Bloom Filters
+  console.time('⏱️ Export Search Indices');
+  for (const pair of pairStats.values()) {
+    if (pair.labelCount > 0) {
+      // Export Local Bloom Filter
+      saveBloomFilter(pair.model, pair.culture, pair.bloomFilter.export());
+      
+      // Export FlexSearch
+      await new Promise((resolve) => {
+        let exportCount = 0;
+        pair.flexIndex.export((key, data) => {
+          saveSearchIndexExport(pair.model, pair.culture, key, data);
+          exportCount++;
+        });
+        setTimeout(resolve, 500); 
+      });
+    }
+  }
+  
+  // SPEC-42: Save Global Bloom Filter
+  if (totalLabels > 0) {
+    console.log('🌍 Saving Global Bloom Filter...');
+    saveBloomFilter('global', 'all', globalBloomFilter.export());
+  }
+  console.timeEnd('⏱️ Export Search Indices');
+
   // Wait for all pending writes to complete
   console.time('⏱️ Flush Pending Writes');
   await flushPendingWrites();
@@ -402,7 +525,7 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
     type: isPriority ? 'PRIORITY_DONE' : 'COMPLETE',
     totalLabels,
     processedFiles,
-    pairProgress: [...pairStats.values()],
+    pairProgress: [...pairStats.values()].map(({bloomFilter, flexIndex, ...rest}) => rest),
     errors,
     elapsed,
     labelsPerSec: elapsed > 0 ? Math.round(totalLabels / (elapsed / 1000)) : 0

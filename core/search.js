@@ -12,6 +12,97 @@
 
 import { DB_NAME, DB_VERSION } from './db.js';
 
+// SPEC-42: Cache loaded Bloom Filters in memory
+const bloomFiltersCache = new Map();
+let globalBloomFilter = null;
+const BloomFilter = window.BloomFilter;
+
+/**
+ * SPEC-42: Load Bloom Filter from IndexedDB
+ */
+async function loadBloomFilter(model, culture) {
+  if (!model || !culture) return null;
+  const key = `${model}|||${culture}`;
+  
+  if (bloomFiltersCache.has(key)) {
+    return bloomFiltersCache.get(key);
+  }
+  
+  const db = await openDB();
+  const tx = db.transaction('bloom_filters', 'readonly');
+  const store = tx.objectStore('bloom_filters');
+  
+  return new Promise((resolve) => {
+    const request = store.get(key);
+    request.onsuccess = () => {
+      if (request.result && request.result.buffer) {
+        const filter = new BloomFilter({ buffer: request.result.buffer });
+        bloomFiltersCache.set(key, filter);
+        resolve(filter);
+      } else {
+        bloomFiltersCache.set(key, null);
+        resolve(null);
+      }
+    };
+    request.onerror = () => resolve(null);
+  });
+}
+
+/**
+ * SPEC-42: Load Global Bloom Filter
+ */
+async function loadGlobalBloomFilter() {
+  if (globalBloomFilter) return globalBloomFilter;
+  
+  const db = await openDB();
+  const tx = db.transaction('bloom_filters', 'readonly');
+  const store = tx.objectStore('bloom_filters');
+  
+  return new Promise((resolve) => {
+    const request = store.get('global|||all');
+    request.onsuccess = () => {
+      if (request.result && request.result.buffer) {
+        globalBloomFilter = new BloomFilter({ buffer: request.result.buffer });
+        console.log('🌍 Global Bloom Filter loaded');
+        resolve(globalBloomFilter);
+      } else {
+        resolve(null);
+      }
+    };
+    request.onerror = () => resolve(null);
+  });
+}
+
+/**
+ * SPEC-42: Refresh Global Bloom Filter by triggering worker rebuild
+ */
+export async function refreshGlobalBloomFilter() {
+  if (!searchWorker) return;
+  
+  console.log('🔄 Requesting Global Bloom Filter refresh...');
+  return new Promise((resolve, reject) => {
+    const id = Date.now();
+    
+    const handler = (e) => {
+      if (e.data.id === id && e.data.type === 'FILTER_BUILT') {
+        searchWorker.removeEventListener('message', handler);
+        // Force reload of local cache
+        globalBloomFilter = null;
+        loadGlobalBloomFilter().then(() => {
+          console.log('✅ Global Bloom Filter refreshed and reloaded');
+          resolve();
+        });
+      } else if (e.data.id === id && e.data.type === 'ERROR') {
+        searchWorker.removeEventListener('message', handler);
+        reject(new Error(e.data.error));
+      }
+    };
+    
+    searchWorker.addEventListener('message', handler);
+    searchWorker.postMessage({ type: 'BUILD_GLOBAL_FILTER', id });
+  });
+}
+
 // FlexSearch is loaded globally via script tag
 const FlexSearch = window.FlexSearch;
 
@@ -128,6 +219,9 @@ export async function initSearch() {
   
   // SPEC-37: Initialize search worker
   initSearchWorker();
+  
+  // SPEC-42: Load Global Bloom Filter
+  loadGlobalBloomFilter();
   
   // Load settings from IndexedDB
   await loadSettings();
@@ -287,26 +381,47 @@ export function indexAll(labels) {
  * @returns {Promise<Array<Object>>} - Matching labels
  */
 export async function search(query, options = {}) {
-  const { exactMatch = false, culture, model, limit = 100 } = options;
+  const { exactMatch = false, culture, model, limit = 100, offset = 0 } = options;
   const startMark = performance.now();
   const queryDesc = query ? `"${query}"` : 'ALL';
-  console.log(`[Search Start] Query: ${queryDesc} | Exact: ${exactMatch} | Culture: ${culture || 'Any'} | Limit: ${limit}`);
+  console.log(`[Search Start] Query: ${queryDesc} | Exact: ${exactMatch} | Culture: ${culture || 'Any'} | Limit: ${limit} | Offset: ${offset}`);
 
   let result;
+  
+  // SPEC-42: Fast-fail using Bloom Filter (applied globally)
+  // Guard: Skip bloom check for very short fuzzy queries (prefixes < 3 aren't indexed)
+  const isShortFuzzy = !exactMatch && query.trim().length < 3;
+
+  if (query && options.useBloomFilter !== false && !isShortFuzzy) {
+    if (culture && model) {
+      const filter = await loadBloomFilter(model, culture);
+      if (filter && !filter.hasText(query)) {
+        console.log(`🚫 Local Bloom Filter rejected search for "${query}" in ${model}|${culture}`);
+        return [];
+      }
+    } else if (!culture && !model && globalBloomFilter) {
+      // Cross-model global search protection
+      if (!globalBloomFilter.hasText(query)) {
+        console.log(`🚫 Global Bloom Filter rejected search for "${query}" across all models`);
+        return [];
+      }
+    }
+  }
+
   // Level 1: Empty query or Exact Match -> Use IndexedDB cursor
   if (!query || query.trim() === '' || exactMatch) {
     console.time(`[Search IDB] Level 1 (Cursor) for ${queryDesc}`);
-    result = await searchIndexedDB(query, { culture, model, limit, exactMatch });
+    result = await searchIndexedDB(query, { culture, model, limit, offset, exactMatch, useBloomFilter: options.useBloomFilter });
     console.timeEnd(`[Search IDB] Level 1 (Cursor) for ${queryDesc}`);
   } else if (!searchSettings.enableHybridSearch) {
     // Fallback to IndexedDB if hybrid disabled
     console.time(`[Search IDB Fallback] Level 2 for ${queryDesc}`);
-    result = await searchIndexedDB(query, { culture, model, limit, exactMatch: false });
+    result = await searchIndexedDB(query, { culture, model, limit, offset, exactMatch: false, useBloomFilter: options.useBloomFilter });
     console.timeEnd(`[Search IDB Fallback] Level 2 for ${queryDesc}`);
   } else {
     // Level 2: Fuzzy search -> Use FlexSearch
     console.time(`[Search FlexSearch] Level 2 for ${queryDesc}`);
-    result = await searchFlexSearch(query, { culture, model, limit });
+    result = await searchFlexSearch(query, { culture, model, limit, offset, useBloomFilter: options.useBloomFilter });
     console.timeEnd(`[Search FlexSearch] Level 2 for ${queryDesc}`);
   }
 
@@ -342,7 +457,7 @@ async function searchIndexedDB(query, options = {}) {
  * @returns {Promise<Array<Object>>}
  */
 async function searchIndexedDBMainThread(query, options = {}) {
-  const { culture, model, limit = 100, exactMatch = false } = options;
+  const { culture, model, limit = 100, offset = 0, exactMatch = false } = options;
   const lowerQuery = query?.toLowerCase() || '';
   
   const db = await openDB();
@@ -352,6 +467,7 @@ async function searchIndexedDBMainThread(query, options = {}) {
   return new Promise((resolve, reject) => {
     const results = [];
     let request;
+    let skippedCount = 0;
     
     // Use index if filtering by culture or model
     if (culture) {
@@ -386,7 +502,11 @@ async function searchIndexedDBMainThread(query, options = {}) {
         }
         
         if (matches) {
-          results.push(label);
+          if (skippedCount < offset) {
+            skippedCount++;
+          } else {
+            results.push(label);
+          }
         }
         
         cursor.continue();
@@ -521,13 +641,80 @@ async function evictLRU() {
 
 /**
  * Load a specific model/culture into FlexSearch from IndexedDB
+ * SPEC-42: Lazy Loading from serialized search_indices if available
  * @param {string} model - Model name
  * @param {string} culture - Culture code
  */
 async function loadModelIntoFlexSearch(model, culture) {
   console.log(`📥 Loading ${model}|${culture} into FlexSearch...`);
-  
   const db = await openDB();
+
+  // Try to load pre-built index first (SPEC-42)
+  try {
+    const tx = db.transaction('search_indices', 'readonly');
+    const store = tx.objectStore('search_indices');
+    
+    // We don't know the exact keys FlexSearch exports (reg, cfg, etc), 
+    // so we fetch all records that start with our prefix.
+    const prefix = `${model}|||${culture}|||`;
+    const request = store.getAll(IDBKeyRange.bound(prefix, prefix + '\uffff'));
+    
+    const records = await new Promise((resolve) => {
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => resolve([]);
+    });
+
+    if (records.length > 0) {
+      console.log(`⚡ Fast-Loading ${records.length} index segments for ${model}|${culture}`);
+      
+      // Import sequentially as FlexSearch export callbacks give us
+      for (const record of records) {
+        await new Promise((resolve) => {
+          // Import takes the key and the stringified data
+          searchIndex.import(record.key, record.data);
+          // FlexSearch import is synchronous, but we wrap for safety
+          resolve(); 
+        });
+      }
+      
+      // Calculate labelCount from catalog (since we bypassed label counting)
+      const catalogTx = db.transaction('catalog', 'readonly');
+      const catalogStore = catalogTx.objectStore('catalog');
+      const catalogReq = catalogStore.get(`${model}|||${culture}`);
+      const catalogEntry = await new Promise(res => {
+        catalogReq.onsuccess = () => res(catalogReq.result);
+        catalogReq.onerror = () => res(null);
+      });
+      const count = catalogEntry?.labelCount || 0;
+      
+      // We don't have the exact IDs for LRU eviction easily, but we can reconstruct them
+      // or just rely on model/culture string removal.
+      // FlexSearch document remove expects ID, but we can just let it stay 
+      // or we can just fetch IDs if needed. For now, we'll store empty IDs 
+      // and eviction will just clear the cache without removing from FlexSearch,
+      // which is a memory leak.
+      // FIX: Fetch just the IDs to support LRU eviction
+      const idsReq = db.transaction('labels', 'readonly').objectStore('labels')
+                       .index('model').getAllKeys(IDBKeyRange.only(model));
+      const loadedIds = await new Promise(res => {
+        idsReq.onsuccess = () => res(idsReq.result.filter(id => !culture || id.includes(`|${culture}|`)));
+        idsReq.onerror = () => res([]);
+      });
+
+      modelCache.set(`${model}|${culture}`, { 
+        lastAccess: Date.now(), 
+        labelCount: count,
+        ids: loadedIds
+      });
+      console.log(`✅ Fast-Loaded ${model}|${culture} via import()`);
+      return;
+    }
+  } catch (err) {
+    console.warn('Failed to fast-load index, falling back to manual rebuild:', err);
+  }
+
+  // Fallback: Manual rebuild from raw labels
+  console.log(`🐌 Manual Index Rebuild for ${model}|${culture}`);
   const tx = db.transaction('labels', 'readonly');
   const store = tx.objectStore('labels');
   const index = store.index('model');
@@ -560,7 +747,7 @@ async function loadModelIntoFlexSearch(model, culture) {
           labelCount: count,
           ids: loadedIds
         });
-        console.log(`✅ Loaded ${count} labels for ${model}|${culture}`);
+        console.log(`✅ Loaded ${count} labels for ${model}|${culture} (Manual)`);
         resolve();
       }
     };

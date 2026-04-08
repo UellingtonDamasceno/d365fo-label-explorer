@@ -27,6 +27,7 @@ const state = {
     cultures: [], // Multiple cultures
     models: [],   // Multiple models
     exactMatch: false,
+    useBloomFilter: true, // SPEC-42: Fast-fail toggle
     requiredCultures: [],
     hideIncomplete: false
   },
@@ -52,6 +53,13 @@ const state = {
   },
   results: [],
   groupedResults: [], // For deduplicated display
+  // SPEC-42: Pagination State for Incremental Search
+  searchPagination: {
+    isLoading: false,
+    hasMore: true,
+    offset: 0,
+    limit: 500 // Chunk size
+  },
   virtualScroll: {
     itemHeight: 160, // Calculated dynamically from CSS var(--card-height) + gap
     bufferSize: 5,
@@ -63,7 +71,10 @@ const state = {
   },
   // UI Loading states
   ui: {
-    isPopulatingFilters: false
+    isPopulatingFilters: false,
+    modalListenersAttached: false,
+    selectionListenersAttached: false,
+    catalogCache: null // SPEC-42: Memory cache for fast modal opening
   },
   // Background processes tracking
   backgroundTasks: [], // Array of { id, type, name, status, progress, message }
@@ -265,6 +276,7 @@ function cacheElements() {
     modalModels: document.getElementById('modal-models'),
     modalLanguages: document.getElementById('modal-languages'),
     modalExactMatch: document.getElementById('modal-exact-match'),
+    modalUseBloomFilter: document.getElementById('modal-use-bloom-filter'),
     modalHideIncomplete: document.getElementById('modal-hide-incomplete'),
     selectedModelsSummary: document.getElementById('selected-models-summary'),
     selectedLanguagesSummary: document.getElementById('selected-languages-summary'),
@@ -658,6 +670,10 @@ function setupEventListeners() {
   
   // Window resize
   window.addEventListener('resize', debounce(handleResize, 100));
+
+  // SPEC-42: Setup one-time listeners
+  setupModalFilterListeners();
+  setupSelectionListeners();
 }
 
 /**
@@ -1442,28 +1458,31 @@ function getSelectedDiscoveryData() {
 /**
  * Setup selection event listeners
  */
+/**
+ * Setup selection event listeners using Event Delegation
+ * SPEC-42: Improved performance by avoiding thousands of listeners
+ */
 function setupSelectionListeners() {
-  // Model header click to expand/collapse
-  elements.modelsList.querySelectorAll('.model-header').forEach(header => {
-    header.addEventListener('click', (e) => {
-      // Don't toggle if clicking checkbox
-      if (e.target.classList.contains('model-checkbox')) return;
-      
+  if (state.ui.selectionListenersAttached) return;
+
+  elements.modelsList?.addEventListener('click', (e) => {
+    // 1. Model header click to expand/collapse
+    const header = e.target.closest('.model-header');
+    if (header && !e.target.classList.contains('model-checkbox')) {
       const modelItem = header.closest('.model-item');
-      modelItem.classList.toggle('expanded');
-    });
+      modelItem?.classList.toggle('expanded');
+      return;
+    }
   });
-  
-  // Model checkbox change
-  elements.modelsList.querySelectorAll('.model-checkbox').forEach(checkbox => {
-    checkbox.addEventListener('change', (e) => {
+
+  elements.modelsList?.addEventListener('change', (e) => {
+    // 2. Model checkbox change
+    if (e.target.classList.contains('model-checkbox')) {
       const modelName = e.target.dataset.model;
       const isChecked = e.target.checked;
       
-      // Save history for undo
       saveSelectionHistory();
       
-      // Update all cultures in this model
       state.discoveryData.forEach(model => {
         if (model.model === modelName) {
           model.cultures.forEach(culture => {
@@ -1473,31 +1492,29 @@ function setupSelectionListeners() {
         }
       });
       
-      // Update UI
       updateLanguageCheckboxes(modelName);
       updateSelectionInfo();
-    });
-  });
-  
-  // Language checkbox change
-  elements.modelsList.querySelectorAll('.language-checkbox').forEach(checkbox => {
-    checkbox.addEventListener('change', (e) => {
+      return;
+    }
+    
+    // 3. Language checkbox change
+    if (e.target.classList.contains('language-checkbox')) {
       const modelName = e.target.dataset.model;
       const cultureName = e.target.dataset.culture;
       const isChecked = e.target.checked;
       
-      // Save history for undo
       saveSelectionHistory();
       
-      // Update selection state
       const key = `${modelName}|||${cultureName}`;
       state.selectionState.set(key, isChecked);
       
-      // Update model checkbox state
       updateModelCheckbox(modelName);
       updateSelectionInfo();
-    });
+      return;
+    }
   });
+
+  state.ui.selectionListenersAttached = true;
 }
 
 /**
@@ -1877,8 +1894,7 @@ async function indexFilesWithWorkers(fileTasks, isPriority = false, options = {}
     if (workerFiles.length === 0) continue;
     
     const worker = new Worker(
-      new URL('./workers/indexer.worker.js', import.meta.url),
-      { type: 'module' }
+      new URL('./workers/indexer.worker.js', import.meta.url)
     );
     workers.push(worker);
     workerStats.set(i, { labels: 0, files: 0 });
@@ -2068,8 +2084,7 @@ async function handleStartIndexing() {
   
   for (let i = 0; i < workerCount; i++) {
     const worker = new Worker(
-      new URL('./workers/indexer.worker.js', import.meta.url),
-      { type: 'module' }
+      new URL('./workers/indexer.worker.js', import.meta.url)
     );
     workers.push(worker);
   }
@@ -2534,18 +2549,24 @@ async function startSilentRescan() {
             showBackgroundProgressIndicator();
           }
           await startParallelIndexing(backgroundFiles, false);
-          
+
           // Finalize state after all background tasks are done
           state.indexingMode = 'idle';
           hideBackgroundProgressIndicator();
+
+          // SPEC-42: Reconstruct Global Bloom Filter after rescan finishes
+          await searchService.refreshGlobalBloomFilter();
+
           console.log('✅ All background indexing tasks completed.');
-        }, 100);
-      } else {
-        // No background files, we are done
-        state.indexingMode = 'idle';
-        hideBackgroundProgressIndicator();
-      }
-    }
+          }, 100);
+          } else {
+          // No background files, we are done
+          state.indexingMode = 'idle';
+          hideBackgroundProgressIndicator();
+
+          // SPEC-42: Reconstruct Global Bloom Filter
+          await searchService.refreshGlobalBloomFilter();
+          }    }
   } catch (err) {
     console.error('Silent re-scan error:', err);
     showError(t('error_rescan_failed') || 'Re-scan failed');
@@ -2721,9 +2742,19 @@ async function showMainInterface(lastIndexed = null) {
  */
 async function populateFilters() {
   if (state.ui.isPopulatingFilters) return;
+  
+  // SPEC-42: Use memory cache if available to avoid DB IO during indexing
+  if (state.ui.catalogCache) {
+    state.availableFilters.cultures = state.ui.catalogCache.cultures;
+    state.availableFilters.models = state.ui.catalogCache.models;
+    renderModalFilters();
+    return;
+  }
+
   state.ui.isPopulatingFilters = true;
 
   try {
+    console.log('📂 Populating filters from database...');
     const catalog = await db.getCatalog();
     let cultures = [...new Set(catalog.map(entry => entry.culture).filter(Boolean))].sort();
     let models = [...new Set(catalog.map(entry => entry.model).filter(Boolean))].sort();
@@ -2737,7 +2768,8 @@ async function populateFilters() {
       if (models.length === 0) models = labelModels;
     }
 
-    // Store available filters
+    // SPEC-42: Update memory cache
+    state.ui.catalogCache = { cultures, models };
     state.availableFilters.cultures = cultures;
     state.availableFilters.models = models;
 
@@ -2755,7 +2787,10 @@ async function populateFilters() {
 function renderModalFilters() {
   // Exact match
   if (elements.modalExactMatch) {
-    elements.modalExactMatch.checked = state.filters.exactMatch;
+    elements.modalExactMatch.checked = !!state.filters.exactMatch;
+  }
+  if (elements.modalUseBloomFilter) {
+    elements.modalUseBloomFilter.checked = !!state.filters.useBloomFilter;
   }
   if (elements.modalHideIncomplete) {
     elements.modalHideIncomplete.checked = state.filters.hideIncomplete;
@@ -2881,69 +2916,100 @@ function normalizeFilterState() {
 
 /**
  * Handle search - SPEC-19 Hybrid Search (async)
+ * SPEC-42: Incremental Loading Support
  */
-async function handleSearch() {
+async function handleSearch(isLoadMore = false) {
+  if (state.searchPagination.isLoading) return;
+  if (isLoadMore && !state.searchPagination.hasMore) return;
+
   const query = state.currentQuery.trim();
-  normalizeFilterState();
   
-  // Show loading
-  if (query) {
-    showLoading();
-  }
-  
-  // Perform search with new filter structure
-  const startTime = performance.now();
-  
-  // Build filter options - support multiple cultures/models
-  const filterOptions = {
-    exactMatch: state.filters.exactMatch,
-    limit: 500 // Limit results for performance
-  };
-
-  if (query.length >= 2 && searchService.getStats().totalIndexed === 0 && state.indexingMode !== 'idle') {
-    await searchService.preloadModelsByName(query, 3);
-  }
-  
-  // If specific filters are selected, apply them
-  let results = await searchService.search(query, filterOptions);
-  
-  // Apply multi-select filters manually
-  if (state.filters.cultures.length > 0) {
-    results = results.filter(l => state.filters.cultures.includes(l.culture));
-  }
-  if (state.filters.models.length > 0) {
-    results = results.filter(l => state.filters.models.includes(l.model));
-  }
-  
-  state.results = results;
-  
-  const searchTime = performance.now() - startTime;
-  console.log(`🔍 Search "${query}" returned ${state.results.length} results in ${searchTime.toFixed(2)}ms`);
-  
-  // Group duplicates if enabled
-  if (state.displaySettings.groupDuplicates) {
-    state.groupedResults = groupDuplicateLabels(state.results);
-  } else {
-    state.groupedResults = state.results.map(label => ({
-      ...label,
-      occurrences: [label],
-      count: 1
-    }));
+  if (!isLoadMore) {
+    normalizeFilterState();
+    state.searchPagination.offset = 0;
+    state.searchPagination.hasMore = true;
+    state.results = [];
+    state.groupedResults = [];
+    // Reset virtual scroll top if it's a new search
+    if (elements.resultsViewport) elements.resultsViewport.scrollTop = 0;
   }
 
-  // Compliance filter/check
-  applyComplianceFilters();
+  state.searchPagination.isLoading = true;
 
-  applySorting();
-  
+  try {
+    // Show loading
+    if (query && !isLoadMore) {
+      showLoading();
+    }
+    
+    // Perform search with new filter structure
+    const startTime = performance.now();
+    
+    // Build filter options - support multiple cultures/models
+    const filterOptions = {
+      exactMatch: state.filters.exactMatch,
+      useBloomFilter: state.filters.useBloomFilter,
+      limit: state.searchPagination.limit,
+      offset: state.searchPagination.offset
+    };
+
+    if (query.length >= 2 && searchService.getStats().totalIndexed === 0 && state.indexingMode !== 'idle') {
+      await searchService.preloadModelsByName(query, 3);
+    }
+    
+    // If specific filters are selected, apply them
+    let newResults = await searchService.search(query, filterOptions);
+    
+    // Apply multi-select filters manually
+    if (state.filters.cultures.length > 0) {
+      newResults = newResults.filter(l => state.filters.cultures.includes(l.culture));
+    }
+    if (state.filters.models.length > 0) {
+      newResults = newResults.filter(l => state.filters.models.includes(l.model));
+    }
+    
+    if (newResults.length < state.searchPagination.limit) {
+      state.searchPagination.hasMore = false;
+    }
+    state.searchPagination.offset += state.searchPagination.limit;
+    
+    // Append new results
+    state.results = isLoadMore ? [...state.results, ...newResults] : newResults;
+    
+    const searchTime = performance.now() - startTime;
+    console.log(`🔍 Search "${query}" returned ${newResults.length} new results in ${searchTime.toFixed(2)}ms`);
+    
+    // Group duplicates if enabled
+    if (state.displaySettings.groupDuplicates) {
+      state.groupedResults = groupDuplicateLabels(state.results);
+    } else {
+      state.groupedResults = state.results.map(label => ({
+        ...label,
+        occurrences: [label],
+        count: 1
+      }));
+    }
+
+    // Compliance filter/check
+    applyComplianceFilters();
+
+    applySorting();
+  } catch (err) {
+    console.error('❌ Search failed:', err);
+    showError(t('toast_search_error') || 'Search failed');
+  } finally {
+    state.searchPagination.isLoading = false;
+  }
+
   // Update UI
-  elements.resultsCount.textContent = state.groupedResults.length.toLocaleString();
+  const totalCountText = state.groupedResults.length.toLocaleString() + (state.searchPagination.hasMore ? '+' : '');
+  elements.resultsCount.textContent = totalCountText;
   if (query) {
     const pendingCount = state.groupedResults.filter(g => g.compliance && !g.compliance.isComplete).length;
     elements.searchInfo.textContent =
       state.filters.requiredCultures.length > 0
-        ? `Found ${state.groupedResults.length} labels (${pendingCount} with missing translations) in ${searchTime.toFixed(0)}ms`
-        : `Found ${state.groupedResults.length} unique labels in ${searchTime.toFixed(0)}ms`;
+        ? `Found ${totalCountText} labels (${pendingCount} with missing translations)`
+        : `Found ${totalCountText} unique labels`;
   } else {
     elements.searchInfo.textContent = '';
   }
@@ -3176,9 +3242,22 @@ function calculateVirtualScrollParams() {
 
 /**
  * Handle scroll event
+ * SPEC-42: Infinite Scroll Trigger
  */
 function handleScroll() {
   state.virtualScroll.scrollTop = elements.resultsViewport.scrollTop;
+  
+  // Check if we need to load more results (infinite scroll)
+  if (state.searchPagination.hasMore && !state.searchPagination.isLoading) {
+    const scrollHeight = elements.resultsViewport.scrollHeight;
+    const clientHeight = elements.resultsViewport.clientHeight;
+    
+    // If we are within 2 screens of the bottom, load more
+    if (scrollHeight - state.virtualScroll.scrollTop - clientHeight < clientHeight * 2) {
+      handleSearch(true);
+    }
+  }
+  
   renderVirtualScroll();
 }
 
@@ -3388,9 +3467,6 @@ async function openAdvancedSearchModal() {
   
   // Show modal
   elements.advancedSearchModal.classList.remove('hidden');
-  
-  // Setup modal filter listeners
-  setupModalFilterListeners();
 }
 
 /**
@@ -6871,6 +6947,9 @@ function mergeBackgroundPairProgress(pairProgress, statusOverride = null) {
 
     state.backgroundIndexing.languageStatus.set(key, existing);
   }
+  
+  // SPEC-42: Invalidate catalog cache so next modal open fetches fresh data
+  state.ui.catalogCache = null;
 }
 
 let catalogFlushTimer = null;
@@ -7175,6 +7254,9 @@ async function startBackgroundIndexing(backgroundFiles) {
       
       state.indexingMode = 'idle';
       hideBackgroundProgressIndicator();
+      
+      // SPEC-42: Reconstruct Global Bloom Filter after indexing completes
+      await searchService.refreshGlobalBloomFilter();
       
       // Refresh label count
       state.totalLabels = finalLabelCount;
@@ -7481,6 +7563,11 @@ function setupModalFilterListeners() {
   // Exact match toggle
   elements.modalExactMatch?.addEventListener('change', (e) => {
     state.filters.exactMatch = e.target.checked;
+  });
+
+  // SPEC-42: Bloom Filter toggle
+  elements.modalUseBloomFilter?.addEventListener('change', (e) => {
+    state.filters.useBloomFilter = e.target.checked;
   });
 
   // Compliance toggle
