@@ -2433,18 +2433,9 @@ async function rehydrateBackgroundStatusFromCatalog() {
  */
 function updateLabelCount() {
   if (elements.labelCountBadge) {
-    if (state.indexingMode === 'background') {
-      const processed = Math.max(0, state.totalLabels - (state.backgroundIndexing.baseLabelCount || 0));
-      const percent = state.backgroundIndexing.totalFiles > 0
-        ? Math.round((state.backgroundIndexing.processedFiles / state.backgroundIndexing.totalFiles) * 100)
-        : 0;
-      elements.labelCountBadge.textContent = t('header_indexing_active', {
-        percent,
-        count: processed.toLocaleString()
-      });
-    } else {
-      elements.labelCountBadge.textContent = t('labels_indexed_count', { count: state.totalLabels.toLocaleString() });
-    }
+    // BUG-39: Always show static total count, never progress
+    // Progress is shown separately in btn-background-progress
+    elements.labelCountBadge.textContent = t('labels_indexed_count', { count: state.totalLabels.toLocaleString() });
   }
 }
 
@@ -2958,10 +2949,20 @@ function calculateVirtualScrollParams() {
   const fontSize = parseFloat(rootStyles.fontSize) || 16; // px
   
   // Convert rem to px
-  state.virtualScroll.itemHeight = Math.ceil((cardHeight + cardGap) * fontSize);
+  let calculatedHeight = Math.ceil((cardHeight + cardGap) * fontSize);
   
-  state.virtualScroll.visibleCount = Math.ceil(viewportHeight / state.virtualScroll.itemHeight) + 
+  // BUG-39: Fallback for invalid values - minimum 100px, maximum 300px
+  if (!calculatedHeight || calculatedHeight <= 0 || isNaN(calculatedHeight)) {
+    calculatedHeight = 150; // Safe fallback
+  }
+  calculatedHeight = Math.max(100, Math.min(300, calculatedHeight));
+  
+  state.virtualScroll.itemHeight = calculatedHeight;
+  
+  // BUG-39: Ensure visibleCount is reasonable (max 50 items at once)
+  const rawVisibleCount = Math.ceil(viewportHeight / state.virtualScroll.itemHeight) + 
     (state.virtualScroll.bufferSize * 2);
+  state.virtualScroll.visibleCount = Math.min(50, Math.max(5, rawVisibleCount));
 }
 
 /**
@@ -5402,6 +5403,11 @@ async function handleBuilderAutoTranslate() {
   }
 
   builderState.translating = true;
+  // BUG-39: Disable button visually during translation
+  if (elements.btnBuilderAutoTranslate) {
+    elements.btnBuilderAutoTranslate.disabled = true;
+    elements.btnBuilderAutoTranslate.classList.add('btn-disabled');
+  }
   updateBuilderTranslateProgress(0, t('ai_translation_initializing'));
 
   try {
@@ -5429,6 +5435,11 @@ async function handleBuilderAutoTranslate() {
     updateBuilderTranslateProgress(0, '');
   } finally {
     builderState.translating = false;
+    // BUG-39: Re-enable button after translation completes
+    if (elements.btnBuilderAutoTranslate) {
+      elements.btnBuilderAutoTranslate.disabled = false;
+      elements.btnBuilderAutoTranslate.classList.remove('btn-disabled');
+    }
     setTimeout(() => {
       updateBuilderTranslateProgress(0, t('ai_translation_idle'));
       setAiTranslationHeaderStatus(false, t('ai_translation_idle'));
