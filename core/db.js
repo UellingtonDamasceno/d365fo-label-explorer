@@ -6,6 +6,8 @@
  * SPEC-32: Added Builder workspace store
  */
 
+import { FLAGS } from '../utils/flags.js';
+
 export const DB_NAME = 'd365fo-labels';
 export const DB_VERSION = 10; // Added multi-entry 'tokens' index for native inverted index
 
@@ -181,6 +183,29 @@ export async function addLabels(labels) {
     tx.oncomplete = () => resolve(count);
     tx.onerror = () => reject(tx.error);
   });
+}
+
+/**
+ * Add labels with optional Web Locks exclusive section to avoid write races.
+ * Falls back to normal writes when locks are unavailable or disabled.
+ * @param {Array<Object>} labels
+ * @returns {Promise<number>}
+ */
+export async function addLabelsWithLock(labels) {
+  if (!FLAGS.USE_DB_WRITE_LOCKS || typeof navigator === 'undefined' || !navigator.locks?.request) {
+    return addLabels(labels);
+  }
+
+  return navigator.locks.request(
+    'db-labels-write',
+    { mode: 'exclusive', ifAvailable: true },
+    async (lock) => {
+      if (!lock) {
+        return addLabels(labels);
+      }
+      return addLabels(labels);
+    }
+  );
 }
 
 /**

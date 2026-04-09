@@ -11,6 +11,8 @@
  */
 
 import { DB_NAME, DB_VERSION } from './db.js';
+import { FLAGS } from '../utils/flags.js';
+import { labelCache } from './opfs-cache.js';
 
 // SPEC-42: Cache loaded Bloom Filters in memory
 const bloomFiltersCache = new Map();
@@ -19,6 +21,17 @@ const BloomFilter = window.BloomFilter;
 
 // SPEC-42: Support for search cancellation
 let currentSearchAbortController = null;
+
+// FASE 8.1: Search L1 cache (query+filters)
+const queryCache = new Map();
+const QUERY_CACHE_SIZE = 50;
+const QUERY_CACHE_TTL_MS = 30_000;
+
+// FASE 8.2: Coverage tracking to avoid unnecessary IDB fallback
+let idbTotalCount = 0;
+
+// FASE 8.7: Debounced prefetch orchestration
+let prefetchTimer = null;
 
 /**
  * SPEC-42: Load Bloom Filter from IndexedDB
@@ -137,6 +150,85 @@ let searchSettings = {
 
 // Stats tracking
 let indexedLabelCount = 0;
+
+function normalizeFilterArray(value) {
+  const arr = Array.isArray(value) ? value : (value ? [value] : []);
+  return [...new Set(arr.filter(Boolean))].sort();
+}
+
+function buildQueryCacheKey(query, options = {}) {
+  const cultures = normalizeFilterArray(options.cultures || options.culture);
+  const models = normalizeFilterArray(options.models || options.model);
+  return JSON.stringify({
+    q: query || '',
+    cultures,
+    models,
+    exactMatch: !!options.exactMatch,
+    useBloomFilter: options.useBloomFilter !== false,
+    limit: options.limit || 100,
+    offset: options.offset || 0
+  });
+}
+
+function setCachedQuery(key, results) {
+  if (queryCache.size >= QUERY_CACHE_SIZE) {
+    queryCache.delete(queryCache.keys().next().value);
+  }
+  queryCache.set(key, { results, timestamp: Date.now() });
+}
+
+function getCachedQuery(key) {
+  const cached = queryCache.get(key);
+  if (!cached) return null;
+  if (Date.now() - cached.timestamp > QUERY_CACHE_TTL_MS) {
+    queryCache.delete(key);
+    return null;
+  }
+  // LRU touch
+  queryCache.delete(key);
+  queryCache.set(key, cached);
+  return cached.results;
+}
+
+export function invalidateSearchCache() {
+  queryCache.clear();
+}
+
+export function setIDBTotalCount(count) {
+  idbTotalCount = Math.max(0, Number(count) || 0);
+}
+
+export function getFlexSearchCoverage() {
+  if (idbTotalCount <= 0) return 0;
+  return Math.min(1, indexedLabelCount / idbTotalCount);
+}
+
+export function scheduleLikelyPrefetch(partialQuery, options = {}) {
+  if (!FLAGS.USE_SEARCH_PREFETCH) return;
+
+  const query = (partialQuery || '').trim();
+  if (query.length < 3) {
+    if (prefetchTimer) {
+      clearTimeout(prefetchTimer);
+      prefetchTimer = null;
+    }
+    return;
+  }
+
+  if (prefetchTimer) clearTimeout(prefetchTimer);
+  prefetchTimer = setTimeout(async () => {
+    try {
+      await preloadModelsByName(query, 2);
+
+      const cultures = normalizeFilterArray(options.cultures || options.culture).slice(0, 2);
+      if (cultures.length > 0) {
+        await preloadPriorityLanguages(cultures);
+      }
+    } catch (err) {
+      console.debug('[Search] Prefetch skipped:', err?.message || err);
+    }
+  }, 200);
+}
 
 /**
  * SPEC-37: Initialize the search worker
@@ -300,6 +392,9 @@ export function indexLabels(labels) {
   if (!searchIndex) {
     initSearch();
   }
+  if (labels.length > 0) {
+    invalidateSearchCache();
+  }
 
   const addUniqueDoc = (label) => {
     if (!label?.id || indexedIds.has(label.id)) {
@@ -320,23 +415,27 @@ export function indexLabels(labels) {
   
   if (labels.length <= CHUNK_SIZE) {
     // Small batch: process immediately
+    let indexedInBatch = 0;
     for (const label of labels) {
       if (!addUniqueDoc(label)) {
         continue;
       }
+      indexedInBatch++;
       
       const cacheKey = `${label.model}|${label.culture}`;
       if (!modelCache.has(cacheKey)) {
-        modelCache.set(cacheKey, { lastAccess: Date.now(), labelCount: 0 });
+        modelCache.set(cacheKey, { lastAccess: Date.now(), labelCount: 0, ids: [] });
       }
-      modelCache.get(cacheKey).labelCount++;
+      const cacheEntry = modelCache.get(cacheKey);
+      cacheEntry.labelCount++;
+      cacheEntry.ids.push(label.id);
       
       // BUG-24: Track indexed cultures
       if (label.culture) {
         indexedCultures.add(label.culture);
       }
     }
-    indexedLabelCount += labels.length;
+    indexedLabelCount += indexedInBatch;
     return;
   }
 
@@ -356,9 +455,11 @@ export function indexLabels(labels) {
       
       const cacheKey = `${label.model}|${label.culture}`;
       if (!modelCache.has(cacheKey)) {
-        modelCache.set(cacheKey, { lastAccess: Date.now(), labelCount: 0 });
+        modelCache.set(cacheKey, { lastAccess: Date.now(), labelCount: 0, ids: [] });
       }
-      modelCache.get(cacheKey).labelCount++;
+      const cacheEntry = modelCache.get(cacheKey);
+      cacheEntry.labelCount++;
+      cacheEntry.ids.push(label.id);
       
       // BUG-24: Track indexed cultures
       if (label.culture) {
@@ -406,13 +507,24 @@ export async function search(query, options = {}) {
 
   // Support both single culture string and multiple cultures array
   const { exactMatch = false, model, limit = 100, offset = 0 } = options;
-  const cultures = Array.isArray(options.cultures) ? options.cultures : (options.culture ? [options.culture] : []);
+  const cultures = normalizeFilterArray(options.cultures || options.culture);
+  const models = normalizeFilterArray(options.models || model);
+  const singleModel = models.length === 1 ? models[0] : null;
   
   const startMark = performance.now();
   const queryDesc = query ? `"${query}"` : 'ALL';
   const cultureDesc = cultures.length > 0 ? cultures.join(',') : 'Any';
+  const cacheKey = buildQueryCacheKey(query, { ...options, cultures, models, limit, offset, exactMatch });
+  const canUseL1Cache = FLAGS.USE_L1_SEARCH_CACHE && !!query && !exactMatch;
   
   console.log(`[Search Start] Query: ${queryDesc} | Exact: ${exactMatch} | Cultures: ${cultureDesc} | Limit: ${limit}`);
+
+  if (canUseL1Cache) {
+    const cached = getCachedQuery(cacheKey);
+    if (cached) {
+      return cached;
+    }
+  }
 
   // SPEC-42: Fast-fail using Bloom Filter (applied globally)
   // Guard: Skip bloom check for very short fuzzy queries (prefixes < 3 aren't indexed)
@@ -420,21 +532,21 @@ export async function search(query, options = {}) {
 
   if (query && options.useBloomFilter !== false && !isShortFuzzy) {
     // If we have specific cultures, we can check their local filters
-    if (cultures.length > 0 && model) {
+    if (cultures.length > 0 && singleModel) {
       // Check each selected culture
       let possiblyExists = false;
       for (const cult of cultures) {
-        const filter = await loadBloomFilter(model, cult);
+        const filter = await loadBloomFilter(singleModel, cult);
         if (!filter || filter.hasText(query)) {
           possiblyExists = true;
           break;
         }
       }
       if (!possiblyExists) {
-        console.log(`🚫 Local Bloom Filters rejected search for "${query}" in ${model}|[${cultureDesc}]`);
+        console.log(`🚫 Local Bloom Filters rejected search for "${query}" in ${singleModel}|[${cultureDesc}]`);
         return [];
       }
-    } else if (cultures.length === 0 && !model && globalBloomFilter) {
+    } else if (cultures.length === 0 && models.length === 0 && globalBloomFilter) {
       // Cross-model global search protection (only if NO filters are set)
       if (!globalBloomFilter.hasText(query)) {
         console.log(`🚫 Global Bloom Filter rejected search for "${query}" across all models`);
@@ -454,18 +566,18 @@ export async function search(query, options = {}) {
       if (isBrowseMode && isIndexing) {
         console.warn('⚠️ Blocking disk browse during active ingestion. Returning RAM results only.');
         // Return only what is already in FlexSearch RAM
-        result = await searchFlexSearch('', { cultures, model, limit, offset });
+        result = await searchFlexSearch('', { cultures, models, limit, offset });
       } else {
         console.time(`[Search IDB] Level 1 (Cursor) for ${queryDesc}`);
-        result = await searchIndexedDB(query, { ...options, cultures, exactMatch, signal });
+        result = await searchIndexedDB(query, { ...options, cultures, models, exactMatch, signal });
         console.timeEnd(`[Search IDB] Level 1 (Cursor) for ${queryDesc}`);
       }
     } else if (!searchSettings.enableHybridSearch) {
-      result = await searchIndexedDB(query, { ...options, cultures, exactMatch: false, signal });
+      result = await searchIndexedDB(query, { ...options, cultures, models, exactMatch: false, signal });
     } else {
       // Level 2: Fuzzy search -> Use FlexSearch
       console.time(`[Search FlexSearch] Level 2 for ${queryDesc}`);
-      result = await searchFlexSearch(query, { cultures, model, limit, offset });
+      result = await searchFlexSearch(query, { cultures, models, limit, offset });
       console.timeEnd(`[Search FlexSearch] Level 2 for ${queryDesc}`);
     }
   } catch (err) {
@@ -475,6 +587,9 @@ export async function search(query, options = {}) {
 
   const duration = (performance.now() - startMark).toFixed(2);
   console.log(`[Search End] Returned ${result.length} items in ${duration}ms`);
+  if (canUseL1Cache) {
+    setCachedQuery(cacheKey, result);
+  }
   return result;
 }
 /**
@@ -506,6 +621,10 @@ async function searchIndexedDB(query, options = {}) {
  */
 async function searchIndexedDBMainThread(query, options = {}) {
   const { culture, model, limit = 100, offset = 0, exactMatch = false } = options;
+  const cultures = normalizeFilterArray(options.cultures || culture);
+  const models = normalizeFilterArray(options.models || model);
+  const singleCulture = cultures.length === 1 ? cultures[0] : null;
+  const singleModel = models.length === 1 ? models[0] : null;
   const lowerQuery = query?.toLowerCase() || '';
   
   const db = await openDB();
@@ -518,10 +637,10 @@ async function searchIndexedDBMainThread(query, options = {}) {
     let skippedCount = 0;
     
     // Use index if filtering by culture or model
-    if (culture) {
-      request = store.index('culture').openCursor(IDBKeyRange.only(culture));
-    } else if (model) {
-      request = store.index('model').openCursor(IDBKeyRange.only(model));
+    if (singleCulture) {
+      request = store.index('culture').openCursor(IDBKeyRange.only(singleCulture));
+    } else if (singleModel) {
+      request = store.index('model').openCursor(IDBKeyRange.only(singleModel));
     } else {
       request = store.openCursor();
     }
@@ -535,8 +654,8 @@ async function searchIndexedDBMainThread(query, options = {}) {
         // Apply additional filters
         let matches = true;
         
-        if (model && label.model !== model) matches = false;
-        if (culture && label.culture !== culture) matches = false;
+        if (models.length > 0 && !models.includes(label.model)) matches = false;
+        if (cultures.length > 0 && !cultures.includes(label.culture)) matches = false;
         
         // Apply text search if query provided
         if (matches && lowerQuery) {
@@ -575,19 +694,27 @@ async function searchIndexedDBMainThread(query, options = {}) {
  */
 async function searchFlexSearch(query, options = {}) {
   const { culture, model, limit = 100 } = options;
+  const cultures = normalizeFilterArray(options.cultures || culture);
+  const models = normalizeFilterArray(options.models || model);
+  const singleCulture = cultures.length === 1 ? cultures[0] : null;
+  const singleModel = models.length === 1 ? models[0] : null;
   
   if (!searchIndex) {
     await initSearch();
   }
   
   // FIX: For global searches (no filters), ensure priority languages are loaded
-  if (!model && !culture) {
+  if (models.length === 0 && cultures.length === 0) {
     if (modelCache.size === 0) {
       await preloadPriorityLanguages();
     }
   } else {
     // Check if we need to load specific model/culture into FlexSearch
-    await ensureModelLoaded(model, culture);
+    if (singleModel && singleCulture) {
+      await ensureModelLoaded(singleModel, singleCulture);
+    } else if (singleModel && cultures.length === 0) {
+      await ensureModelLoaded(singleModel, null);
+    }
   }
   
   // Perform FlexSearch
@@ -608,8 +735,8 @@ async function searchFlexSearch(query, options = {}) {
           
           // Apply filters
           let matches = true;
-          if (model && label.model !== model) matches = false;
-          if (culture && label.culture !== culture) matches = false;
+          if (models.length > 0 && !models.includes(label.model)) matches = false;
+          if (cultures.length > 0 && !cultures.includes(label.culture)) matches = false;
           
           if (matches) {
             idSet.add(item.id);
@@ -621,24 +748,37 @@ async function searchFlexSearch(query, options = {}) {
   });
   
   // Update LRU timestamps
-  if (model && culture) {
-    const cacheKey = `${model}|${culture}`;
+  if (singleModel && singleCulture) {
+    const cacheKey = `${singleModel}|${singleCulture}`;
     if (modelCache.has(cacheKey)) {
       modelCache.get(cacheKey).lastAccess = Date.now();
     }
   }
   
-  // FALLBACK: If FlexSearch returned nothing in a global search, try Level 1 (IndexedDB)
-  // SAFETY: Do NOT fallback to disk if we are currently indexing to prevent DB lock
+  // FALLBACK: Smart fallback based on coverage and load state.
+  // SAFETY: Do NOT fallback to disk if we are currently indexing to prevent DB lock.
   const isIndexing = window.appState?.indexingMode !== 'idle';
-  
-  if (matchedLabels.length === 0 && !model && !culture) {
+
+  if (matchedLabels.length === 0) {
     if (isIndexing) {
       console.warn('🕒 FlexSearch empty, but skipping disk fallback due to active indexing.');
       return [];
     }
-    console.log('🔍 FlexSearch returned no results, falling back to IndexedDB scan...');
-    return searchIndexedDB(query, options);
+
+    const isGlobalSearch = models.length === 0 && cultures.length === 0;
+    if (isGlobalSearch) {
+      const coverage = getFlexSearchCoverage();
+      if (coverage >= 0.8) {
+        return [];
+      }
+      console.log(`🔍 FlexSearch miss (coverage ${(coverage * 100).toFixed(0)}%), falling back to IndexedDB...`);
+      return searchIndexedDB(query, options);
+    }
+
+    const filteredKeyNotLoaded = singleModel && singleCulture && !modelCache.has(`${singleModel}|${singleCulture}`);
+    if (modelCache.size === 0 || filteredKeyNotLoaded) {
+      return searchIndexedDB(query, options);
+    }
   }
   
   return matchedLabels.slice(0, limit);
@@ -650,9 +790,9 @@ async function searchFlexSearch(query, options = {}) {
  * @param {string} culture - Culture code
  */
 async function ensureModelLoaded(model, culture) {
-  if (!model || !culture) return;
+  if (!model) return;
   
-  const cacheKey = `${model}|${culture}`;
+  const cacheKey = `${model}|${culture || '*'}`;
   
   // Already loaded
   if (modelCache.has(cacheKey)) {
@@ -704,7 +844,8 @@ async function evictLRU() {
  * @param {string} culture - Culture code
  */
 async function loadModelIntoFlexSearch(model, culture) {
-  console.log(`📥 Loading ${model}|${culture} into FlexSearch...`);
+  const cacheKey = `${model}|${culture || '*'}`;
+  console.log(`📥 Loading ${cacheKey} into FlexSearch...`);
   const db = await openDB();
 
   // Try to load pre-built index first (SPEC-42)
@@ -759,12 +900,12 @@ async function loadModelIntoFlexSearch(model, culture) {
         idsReq.onerror = () => res([]);
       });
 
-      modelCache.set(`${model}|${culture}`, { 
+      modelCache.set(cacheKey, { 
         lastAccess: Date.now(), 
         labelCount: count,
         ids: loadedIds
       });
-      console.log(`✅ Fast-Loaded ${model}|${culture} via import()`);
+      console.log(`✅ Fast-Loaded ${cacheKey} via import()`);
       return;
     }
   } catch (err) {
@@ -805,12 +946,12 @@ async function loadModelIntoFlexSearch(model, culture) {
         
         cursor.continue();
       } else {
-        modelCache.set(`${model}|${culture}`, { 
+        modelCache.set(cacheKey, { 
           lastAccess: Date.now(), 
           labelCount: count,
           ids: loadedIds
         });
-        console.log(`✅ Loaded ${count} labels for ${model}|${culture} (Manual)`);
+        console.log(`✅ Loaded ${count} labels for ${cacheKey} (Manual)`);
         resolve();
       }
     };
@@ -882,6 +1023,7 @@ export async function getAllLabels(options = {}) {
 export function getStats() {
   return {
     totalIndexed: indexedLabelCount,
+    flexCoverage: getFlexSearchCoverage(),
     modelsInMemory: modelCache.size,
     maxModels: searchSettings.maxModelsInMemory,
     cacheEntries: Array.from(modelCache.keys())
@@ -899,6 +1041,11 @@ export function clearSearch() {
   indexedIds.clear();
   indexedLabelCount = 0;
   indexedCultures.clear(); // BUG-24: Reset tracked cultures
+  if (prefetchTimer) {
+    clearTimeout(prefetchTimer);
+    prefetchTimer = null;
+  }
+  invalidateSearchCache();
 }
 
 /**
@@ -915,6 +1062,11 @@ export function isReady() {
  */
 export function getIndexedCultures() {
   return [...indexedCultures];
+}
+
+export async function clearWarmStartCache() {
+  if (!FLAGS.USE_OPFS_CACHE) return;
+  await labelCache.clear();
 }
 
 /**
@@ -955,8 +1107,18 @@ export async function preloadPriorityLanguages(cultures = null) {
   }
 
   for (const culture of languagesToLoad) {
-    // Load a sample to prime the cache
+    const cacheKey = `priority-${culture}`;
+    if (FLAGS.USE_OPFS_CACHE) {
+      const cached = await labelCache.read(cacheKey);
+      if (cached && Array.isArray(cached) && cached.length > 0) {
+        indexLabels(cached);
+        console.log(`⚡ OPFS warm start: ${cached.length} labels for ${culture}`);
+        continue;
+      }
+    }
+
     const request = index.openCursor(IDBKeyRange.only(culture));
+    const loadedLabels = [];
 
     await new Promise((resolve) => {
       let count = 0;
@@ -971,23 +1133,14 @@ export async function preloadPriorityLanguages(cultures = null) {
             cursor.continue();
             return;
           }
-          const doc = {
-            ...label,
-            searchTarget: `${label.labelId} ${label.text} ${label.help || ''} ${label.fullId}`
-          };
-          searchIndex.add(doc);
-          indexedIds.add(label.id);
 
-          const cacheKey = `${label.model}|${label.culture}`;
-          if (!modelCache.has(cacheKey)) {
-            modelCache.set(cacheKey, { lastAccess: Date.now(), labelCount: 0, ids: [] });
-          }
-          modelCache.get(cacheKey).labelCount++;
-          modelCache.get(cacheKey).ids.push(label.id);
-
+          loadedLabels.push(label);
           count++;
           cursor.continue();
         } else {
+          if (loadedLabels.length > 0) {
+            indexLabels(loadedLabels);
+          }
           console.log(`🔥 Warm start: Pre-loaded ${count} labels for ${culture}`);
           resolve();
         }
@@ -995,8 +1148,16 @@ export async function preloadPriorityLanguages(cultures = null) {
 
       request.onerror = () => resolve();
     });
+
+    if (FLAGS.USE_OPFS_CACHE && loadedLabels.length > 0) {
+      labelCache.write(cacheKey, loadedLabels).catch((err) => {
+        console.debug('[OPFS] Warm cache write skipped:', err?.message || err);
+      });
+    }
   }
 
   console.timeEnd('⏳ Preload Priority Languages (FlexSearch)');
-}// Export for backwards compatibility
+}
+
+// Export for backwards compatibility
 export { searchIndex };

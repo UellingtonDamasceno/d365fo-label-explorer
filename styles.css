@@ -4,6 +4,23 @@
    Modern Fluid UI with rem units
    =================================================================== */
 
+/* ============================
+   TABLE OF CONTENTS
+   ============================
+   1. CSS Variables & Reset
+   2. Layout & App Shell
+   3. Header
+   4. Sidebar & Search
+   5. Virtual Scroll & Cards
+   6. Modals (base)
+   7. Feature: Discovery Dashboard
+   8. Feature: Builder Sidebar
+   9. Feature: Extractor Workspace
+   10. Feature: Merger Modal
+   11. Feature: Progress & Stats
+   12. Utilities (toast, spinner, etc.)
+   ============================ */
+
 /* Base font size for rem calculations */
 html {
   font-size: 16px;
@@ -1388,37 +1405,6 @@ body {
 
 .toggle-container input[type="checkbox"] {
   display: none;
-}
-
-.toggle-switch {
-  position: relative;
-  width: 2.5rem;
-  height: 1.25rem;
-  background: var(--border);
-  border-radius: 0.75rem;
-  transition: background 0.2s cubic-bezier(0.4, 0.0, 0.2, 1);
-  flex-shrink: 0;
-}
-
-.toggle-switch::after {
-  content: '';
-  position: absolute;
-  top: 0.125rem;
-  left: 0.125rem;
-  width: 1rem;
-  height: 1rem;
-  background: white;
-  border-radius: 50%;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
-  transition: transform 0.2s cubic-bezier(0.4, 0.0, 0.2, 1);
-}
-
-.toggle-container input:checked + .toggle-switch {
-  background: var(--primary);
-}
-
-.toggle-container input:checked + .toggle-switch::after {
-  transform: translateX(1.25rem);
 }
 
 .toggle-label {
@@ -2895,53 +2881,6 @@ body {
   overflow-y: auto;
 }
 
-.extractor-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(8rem, 14rem) auto;
-  gap: 0.5rem;
-  align-items: start;
-  padding: 0.625rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-}
-
-.extractor-row.extractor-confirmed {
-  border-left: 3px solid var(--success);
-}
-
-.extractor-row.extractor-reused {
-  border-left: 3px solid var(--info);
-}
-
-.extractor-row.extractor-ignored {
-  opacity: 0.6;
-}
-
-.extractor-main {
-  min-width: 0;
-}
-
-.extractor-text {
-  font-size: 0.875rem;
-  color: var(--text);
-  margin-bottom: 0.25rem;
-}
-
-.extractor-context {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.extractor-existing {
-  font-size: 0.75rem;
-  color: var(--info);
-  margin-bottom: 0.25rem;
-}
-
 .extractor-id-input {
   width: 100%;
   padding: 0.5rem 0.625rem;
@@ -2953,27 +2892,9 @@ body {
   font-size: 0.8125rem;
 }
 
-.extractor-row-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.375rem;
-}
-
 /* ===================================================================
    LABEL BUILDER IDE (SPEC-32)
    =================================================================== */
-.builder-modal-content {
-  width: min(35rem, 44vw);
-  max-width: none;
-  height: 100vh;
-  max-height: 100vh;
-  border-radius: 0;
-  border-left: 1px solid var(--border);
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-}
-
 .builder-header-actions {
   display: flex;
   align-items: center;
@@ -3232,7 +3153,7 @@ body {
 }
 
 /* Direct Save Mode Warning Style */
-.builder-modal-content.direct-save-active {
+.builder-content.direct-save-active {
   border: 2px solid var(--warning);
 }
 
@@ -3705,8 +3626,9 @@ body {
     transform: rotate(90deg);
   }
 
-  .builder-modal-content {
+  .builder-sidebar {
     width: 100%;
+    top: auto;
     max-height: 50vh;
     height: 50vh;
     border-left: none;
@@ -3718,11 +3640,11 @@ body {
     max-height: 95vh;
   }
 
-  .extractor-row {
+  .extractor-candidate {
     grid-template-columns: 1fr;
   }
 
-  .extractor-row-actions {
+  .extractor-candidate-actions {
     justify-content: flex-end;
   }
 
@@ -4039,6 +3961,10 @@ body {
   border: 1px solid var(--border);
 }
 
+.extractor-candidate-main {
+  min-width: 0;
+}
+
 .extractor-candidate:hover {
   border-color: var(--primary-light);
 }
@@ -4052,6 +3978,12 @@ body {
   font-size: 0.7rem;
   color: var(--text-secondary);
   margin-top: 0.25rem;
+}
+
+.extractor-candidate-existing {
+  font-size: 0.75rem;
+  color: var(--info);
+  margin-bottom: 0.25rem;
 }
 
 .extractor-candidate-actions {

@@ -6,12 +6,8 @@
 
 importScripts('../utils/bloom-filter.js');
 
-// sync: core/db.js
-const DB_NAME = 'd365fo-labels';
-// sync: core/db.js
-const DB_VERSION = 10; // SPEC-42 Inverted Index
-let runtimeDbName = DB_NAME;
-let runtimeDbVersion = DB_VERSION;
+let runtimeDbName = null;
+let runtimeDbVersion = null;
 
 let db = null;
 
@@ -22,6 +18,10 @@ function openDB() {
   return new Promise((resolve, reject) => {
     if (db) {
       resolve(db);
+      return;
+    }
+    if (!runtimeDbName || typeof runtimeDbVersion !== 'number') {
+      reject(new Error('Worker DB configuration missing. Pass dbName and dbVersion from core/search.js.'));
       return;
     }
     
@@ -241,6 +241,14 @@ self.onmessage = async (e) => {
       db.close();
       db = null;
     }
+  }
+  if (!runtimeDbName || typeof runtimeDbVersion !== 'number') {
+    self.postMessage({
+      type: 'ERROR',
+      id,
+      error: 'Worker DB configuration missing. Pass dbName and dbVersion before search.'
+    });
+    return;
   }
   const startTime = performance.now();
   

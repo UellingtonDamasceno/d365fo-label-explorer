@@ -17,6 +17,9 @@ export const FLAGS = Object.freeze({
   USE_FRAGMENT_RENDER: localStorage.getItem('ff_fragment') === '1',
   // Fase 7: Performance
   USE_L1_SEARCH_CACHE: localStorage.getItem('ff_search_cache') === '1',
-  USE_OPFS_CACHE: localStorage.getItem('ff_opfs') === '1'
+  USE_OPFS_CACHE: localStorage.getItem('ff_opfs') === '1',
+  USE_TAB_SYNC: localStorage.getItem('ff_tab_sync') === '1',
+  USE_DB_WRITE_LOCKS: localStorage.getItem('ff_db_write_lock') === '1',
+  USE_SEARCH_PREFETCH: localStorage.getItem('ff_search_prefetch') === '1'
 });
 

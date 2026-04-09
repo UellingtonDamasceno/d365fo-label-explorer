@@ -8,12 +8,8 @@ importScripts('../libs/flexsearch.bundle.min.js');
 importScripts('../utils/bloom-filter.js');
 importScripts('./utils/label-parser.js');
 
-// sync: core/db.js
-const DB_NAME = 'd365fo-labels';
-// sync: core/db.js
-const DB_VERSION = 10; // SPEC-42 Inverted Index
-let runtimeDbName = DB_NAME;
-let runtimeDbVersion = DB_VERSION;
+let runtimeDbName = null;
+let runtimeDbVersion = null;
 
 // Smart Batching Constants
 const BATCH_SIZE = 5000;          // Write every 5000 labels
@@ -28,6 +24,9 @@ let pendingWrites = [];           // Track fire-and-forget promises
  */
 async function initDB() {
   if (db) return db;
+  if (!runtimeDbName || typeof runtimeDbVersion !== 'number') {
+    throw new Error('Worker DB configuration missing. Pass dbName and dbVersion from app.js.');
+  }
 
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(runtimeDbName, runtimeDbVersion);
@@ -466,6 +465,13 @@ self.onmessage = async function(event) {
       db.close();
       db = null;
     }
+  }
+  if (!runtimeDbName || typeof runtimeDbVersion !== 'number') {
+    self.postMessage({
+      type: 'DB_ERROR',
+      error: 'Worker DB configuration missing. Pass dbName and dbVersion before processing.'
+    });
+    return;
   }
 
   switch (type) {
