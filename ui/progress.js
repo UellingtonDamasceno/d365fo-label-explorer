@@ -5,12 +5,36 @@ export function createBackgroundProgressController({
   t,
   formatMs,
   formatLanguageDisplay,
-  updateLabelCount,
-  hideLiveIndexLine,
-  updateLiveIndexLine
+  updateLabelCount
 }) {
   let catalogFlushTimer = null;
   const catalogPendingUpdates = new Map();
+
+  // --- UI Helpers ---
+
+  const showLiveIndexLine = () => {
+    const elements = getElements();
+    elements.liveIndexLine?.classList.remove('hidden');
+  };
+
+  const hideLiveIndexLine = () => {
+    const elements = getElements();
+    elements.liveIndexLine?.classList.add('hidden');
+    if (elements.liveIndexLineFill) {
+      elements.liveIndexLineFill.style.width = '0%';
+    }
+  };
+
+  const updateLiveIndexLine = (percent) => {
+    const elements = getElements();
+    const normalized = Math.max(0, Math.min(100, percent || 0));
+    state.realtimeStreaming.linePercent = normalized;
+    if (elements.liveIndexLineFill) {
+      elements.liveIndexLineFill.style.width = `${normalized}%`;
+    }
+  };
+
+  // --- Background Progress Logic ---
 
   function showBackgroundProgressIndicator() {
     const elements = getElements();
@@ -75,6 +99,7 @@ export function createBackgroundProgressController({
       existing.totalBytes = pair.totalBytes ?? existing.totalBytes ?? 0;
       existing.firstStartedAt = pair.firstStartedAt ?? existing.firstStartedAt ?? null;
       existing.lastEndedAt = pair.lastEndedAt ?? existing.lastEndedAt ?? null;
+      
       if (statusOverride) {
         existing.status = statusOverride;
       } else if (existing.processedFiles > 0 && existing.status === 'waiting') {
@@ -309,7 +334,10 @@ export function createBackgroundProgressController({
       .map((group) => {
         const status = getLanguageAggregateStatus(group.culture);
         const statusClass = status === 'indexing' ? 'processing' : status;
-        const statusIcon = status === 'ready' ? '✅' : status === 'indexing' ? '⏳' : '💤';
+        
+        // Use standard text icons instead of complex characters if needed, or ensure UTF8
+        const statusIcon = status === 'ready' ? '✓' : status === 'indexing' ? '⌛' : '💤';
+        
         const statusTextKey = status === 'ready'
           ? 'status_ready'
           : status === 'indexing'
@@ -391,7 +419,7 @@ export function createBackgroundProgressController({
         languageName.append(' ');
         const priorityBadge = document.createElement('span');
         priorityBadge.className = 'filter-status-indicator ready';
-        priorityBadge.textContent = '⭐';
+        priorityBadge.textContent = '★';
         languageName.appendChild(priorityBadge);
       }
     }
@@ -453,6 +481,9 @@ export function createBackgroundProgressController({
   }
 
   return {
+    showLiveIndexLine,
+    hideLiveIndexLine,
+    updateLiveIndexLine,
     showBackgroundProgressIndicator,
     hideBackgroundProgressIndicator,
     updateBackgroundProgress,

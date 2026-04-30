@@ -3,6 +3,8 @@
  * Displays temporary notifications to the user
  */
 
+import { escapeHtml } from './highlight.js';
+
 const TOAST_DURATION = 3000;
 const TOAST_CONTAINER_ID = 'toast-container';
 
@@ -56,17 +58,6 @@ function getIcon(type) {
     default:
       return 'ℹ';
   }
-}
-
-/**
- * Escape HTML
- * @param {string} text 
- * @returns {string}
- */
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
 }
 
 /**

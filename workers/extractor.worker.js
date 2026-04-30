@@ -13,15 +13,32 @@ function shouldIgnoreCandidate(text) {
   return false;
 }
 
-function lineNumberAt(content, index) {
-  let line = 1;
-  for (let i = 0; i < index; i++) {
-    if (content[i] === '\n') line++;
+function buildLineIndex(content) {
+  const starts = [0];
+  for (let i = 0; i < content.length; i++) {
+    if (content[i] === '\n') {
+      starts.push(i + 1);
+    }
   }
-  return line;
+  return starts;
+}
+
+function lineNumberAt(lineIndex, charIndex) {
+  let lo = 0;
+  let hi = lineIndex.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (lineIndex[mid] <= charIndex) {
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return hi + 1;
 }
 
 function extractFromXml(content, fileName, sourceModel = '') {
+  const lineIndex = buildLineIndex(content);
   const results = [];
   for (const tag of XML_TAGS) {
     const regex = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'gi');
@@ -33,7 +50,7 @@ function extractFromXml(content, fileName, sourceModel = '') {
         text,
         context: {
           file: fileName,
-          line: lineNumberAt(content, match.index),
+          line: lineNumberAt(lineIndex, match.index),
           type: `xml:${tag}`,
           model: sourceModel
         }
@@ -51,6 +68,7 @@ function stripComments(content) {
 
 function extractFromXpp(content, fileName, sourceModel = '') {
   const clean = stripComments(content);
+  const lineIndex = buildLineIndex(clean);
   const results = [];
   const regex = /"([^"\n]{3,})"|'([^'\n]{3,})'/g;
   let match;
@@ -63,7 +81,7 @@ function extractFromXpp(content, fileName, sourceModel = '') {
       text,
       context: {
         file: fileName,
-        line: lineNumberAt(clean, match.index),
+        line: lineNumberAt(lineIndex, match.index),
         type: 'xpp:string',
         model: sourceModel
       }
@@ -82,17 +100,19 @@ function dedupeResults(rawResults) {
       grouped.set(key, {
         text: item.text,
         contexts: [],
-        occurrences: 0
+        occurrences: [],
+        occurrenceCount: 0
       });
     }
     const group = grouped.get(key);
-    group.occurrences += 1;
+    group.occurrenceCount += 1;
+    group.occurrences.push(item.context);
     if (group.contexts.length < 8) {
       group.contexts.push(item.context);
     }
   });
 
-  return [...grouped.values()].sort((a, b) => b.occurrences - a.occurrences);
+  return [...grouped.values()].sort((a, b) => b.occurrenceCount - a.occurrenceCount);
 }
 
 self.onmessage = async (event) => {

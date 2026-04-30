@@ -8,30 +8,36 @@ importScripts('../utils/bloom-filter.js');
 
 let runtimeDbName = null;
 let runtimeDbVersion = null;
+let openWorkerDBBridge = null;
 
 let db = null;
 
 /**
  * Open IndexedDB connection
  */
-function openDB() {
-  return new Promise((resolve, reject) => {
-    if (db) {
-      resolve(db);
-      return;
-    }
-    if (!runtimeDbName || typeof runtimeDbVersion !== 'number') {
-      reject(new Error('Worker DB configuration missing. Pass dbName and dbVersion from core/search.js.'));
-      return;
-    }
-    
-    const request = indexedDB.open(runtimeDbName, runtimeDbVersion);
-    request.onsuccess = () => {
-      db = request.result;
-      resolve(db);
-    };
-    request.onerror = () => reject(request.error);
-  });
+async function resolveOpenWorkerDB() {
+  if (openWorkerDBBridge) return openWorkerDBBridge;
+  const mod = await import('../core/db-connection.js');
+  if (typeof mod.openWorkerDB !== 'function') {
+    throw new Error('openWorkerDB is not available in core/db-connection.js');
+  }
+  openWorkerDBBridge = mod.openWorkerDB;
+  return openWorkerDBBridge;
+}
+
+async function openDB() {
+  if (db) return db;
+  if (!runtimeDbName || typeof runtimeDbVersion !== 'number') {
+    throw new Error('Worker DB configuration missing. Pass dbName and dbVersion from core/search.js.');
+  }
+
+  const openWorkerDB = await resolveOpenWorkerDB();
+  db = await openWorkerDB({ dbName: runtimeDbName, dbVersion: runtimeDbVersion });
+  db.onversionchange = () => {
+    db.close();
+    db = null;
+  };
+  return db;
 }
 
 // SPEC-42: Cache loaded Bloom Filters in worker memory

@@ -10,7 +10,7 @@
  * The global labelsData array is PROHIBITED - all data comes from IndexedDB
  */
 
-import { DB_NAME, DB_VERSION } from './db.js';
+import { DB_NAME, DB_VERSION } from './db-constants.js';
 import { FLAGS } from '../utils/flags.js';
 import { labelCache } from './opfs-cache.js';
 
@@ -148,6 +148,14 @@ let searchSettings = {
   useSearchWorker: true // SPEC-37: Enable worker by default
 };
 
+// BUG-28: Keep only essential label fields in RAM-backed FlexSearch store.
+const SEARCH_STORE_FIELDS = ['id', 'fullId', 'labelId', 'text', 'help', 'model', 'culture', 'prefix'];
+
+// SPEC-42: Hot Content Cache (Flyweight) to avoid DB contention for priority labels
+// Storing raw objects in a Map is 5x lighter than FlexSearch's internal Document store
+const hotContentCache = new Map();
+const MAX_HOT_CACHE_SIZE = 30000; // Limit to ~30k labels in RAM (approx 50-100MB)
+
 // Stats tracking
 let indexedLabelCount = 0;
 
@@ -168,6 +176,55 @@ function buildQueryCacheKey(query, options = {}) {
     limit: options.limit || 100,
     offset: options.offset || 0
   });
+}
+
+function buildSearchTarget(label) {
+  return `${label?.labelId || ''} ${label?.text || ''} ${label?.help || ''} ${label?.fullId || ''}`.trim();
+}
+
+function createSearchDoc(label) {
+  return {
+    id: label.id,
+    fullId: label.fullId || '',
+    labelId: label.labelId || '',
+    text: label.text || '',
+    help: label.help || '',
+    model: label.model || '',
+    culture: label.culture || '',
+    prefix: label.prefix || '',
+    searchTarget: buildSearchTarget(label)
+  };
+}
+
+function getMaxModelsInMemory() {
+  const configured = Number(searchSettings.maxModelsInMemory);
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return MAX_MODELS_IN_MEMORY;
+  }
+  return Math.max(1, Math.floor(configured));
+}
+
+function trackIndexedLabelInModelCache(label) {
+  const cacheKey = `${label.model}|${label.culture}`;
+  let cacheEntry = modelCache.get(cacheKey);
+
+  if (!cacheEntry) {
+    const maxModels = getMaxModelsInMemory();
+    while (modelCache.size >= maxModels) {
+      const evicted = evictLRUSync();
+      if (!evicted) break;
+    }
+    cacheEntry = { lastAccess: Date.now(), labelCount: 0, ids: [] };
+    modelCache.set(cacheKey, cacheEntry);
+  }
+
+  cacheEntry.lastAccess = Date.now();
+  cacheEntry.labelCount++;
+  cacheEntry.ids.push(label.id);
+
+  if (label.culture) {
+    indexedCultures.add(label.culture);
+  }
 }
 
 function setCachedQuery(key, results) {
@@ -218,9 +275,9 @@ export function scheduleLikelyPrefetch(partialQuery, options = {}) {
   if (prefetchTimer) clearTimeout(prefetchTimer);
   prefetchTimer = setTimeout(async () => {
     try {
-      await preloadModelsByName(query, 2);
-
       const cultures = normalizeFilterArray(options.cultures || options.culture).slice(0, 2);
+      await preloadModelsByName(query, 2, cultures);
+
       if (cultures.length > 0) {
         await preloadPriorityLanguages(cultures);
       }
@@ -297,13 +354,14 @@ function workerSearch(type, query, options) {
 
 /**
  * Initialize the search service
+ * SPEC-42: High-efficiency mode (Pointer-only RAM)
  */
 export async function initSearch() {
   searchIndex = new FlexSearch.Document({
     document: {
       id: 'id',
       index: ['searchTarget'],
-      store: true
+      store: false // CRITICAL BUG-28: Do not mirror DB in RAM. Store only IDs.
     },
     tokenize: 'forward',
     resolution: 9,
@@ -322,6 +380,60 @@ export async function initSearch() {
   
   // Load settings from IndexedDB
   await loadSettings();
+}
+
+/**
+ * Fetch full documents from IndexedDB by their IDs (JIT Retrieval)
+ * BUG-28: Efficient lookup for search results with cache and abort support
+ */
+async function fetchDocsFromDb(ids, signal = null) {
+  if (!ids || ids.length === 0) return [];
+  
+  const results = [];
+  const idsToFetch = [];
+
+  // 1. First, check memory cache (instant)
+  for (const id of ids) {
+    if (hotContentCache.has(id)) {
+      results.push(hotContentCache.get(id));
+    } else {
+      idsToFetch.push(id);
+    }
+  }
+
+  // 2. If all found in cache, return immediately
+  if (idsToFetch.length === 0) return results;
+
+  // 3. Fetch remaining from DB (respecting signal)
+  if (signal?.aborted) return results;
+
+  try {
+    const db = await openDB();
+    const tx = db.transaction('labels', 'readonly');
+    const store = tx.objectStore('labels');
+    
+    const dbResults = await Promise.all(idsToFetch.map(id => {
+      return new Promise((resolve, reject) => {
+        if (signal?.aborted) return resolve(null);
+        
+        const request = store.get(id);
+        request.onsuccess = () => {
+          const val = request.result;
+          // Add to cache for next time
+          if (val && hotContentCache.size < MAX_HOT_CACHE_SIZE) {
+            hotContentCache.set(id, val);
+          }
+          resolve(val);
+        };
+        request.onerror = () => resolve(null);
+      });
+    }));
+
+    return [...results, ...dbResults.filter(Boolean)];
+  } catch (err) {
+    console.warn('DB Fetch failed or aborted:', err.message);
+    return results;
+  }
 }
 
 /**
@@ -390,7 +502,8 @@ function openDB() {
  */
 export function indexLabels(labels) {
   if (!searchIndex) {
-    initSearch();
+    console.warn('[Search] indexLabels called before initSearch(). Call initSearch() first.');
+    return;
   }
   if (labels.length > 0) {
     invalidateSearchCache();
@@ -401,12 +514,15 @@ export function indexLabels(labels) {
       return false;
     }
 
-    const doc = {
-      ...label,
-      searchTarget: `${label.labelId} ${label.text} ${label.help || ''} ${label.fullId}`
-    };
+    const doc = createSearchDoc(label);
     searchIndex.add(doc);
     indexedIds.add(label.id);
+
+    // SPEC-42: Populate Hot Content Cache for instant JIT retrieval
+    if (hotContentCache.size < MAX_HOT_CACHE_SIZE) {
+      hotContentCache.set(label.id, label);
+    }
+    
     return true;
   };
 
@@ -421,19 +537,7 @@ export function indexLabels(labels) {
         continue;
       }
       indexedInBatch++;
-      
-      const cacheKey = `${label.model}|${label.culture}`;
-      if (!modelCache.has(cacheKey)) {
-        modelCache.set(cacheKey, { lastAccess: Date.now(), labelCount: 0, ids: [] });
-      }
-      const cacheEntry = modelCache.get(cacheKey);
-      cacheEntry.labelCount++;
-      cacheEntry.ids.push(label.id);
-      
-      // BUG-24: Track indexed cultures
-      if (label.culture) {
-        indexedCultures.add(label.culture);
-      }
+      trackIndexedLabelInModelCache(label);
     }
     indexedLabelCount += indexedInBatch;
     return;
@@ -442,7 +546,14 @@ export function indexLabels(labels) {
   // Large batch: process in chunks with yielding
   let processed = 0;
   
-  const processChunk = () => {
+  const processChunk = async () => {
+    // BUG-28: Memory Throttling
+    // If JS Heap is dangerously high (> 1.5GB), wait for GC
+    if (performance.memory && performance.memory.usedJSHeapSize > 1500000000) {
+      console.warn(`⚠️ High Memory detected (${Math.round(performance.memory.usedJSHeapSize/1048576)}MB). Throttling ingestion...`);
+      await new Promise(res => setTimeout(res, 500));
+    }
+
     const end = Math.min(processed + CHUNK_SIZE, labels.length);
     let indexedInChunk = 0;
     
@@ -452,19 +563,7 @@ export function indexLabels(labels) {
         continue;
       }
       indexedInChunk++;
-      
-      const cacheKey = `${label.model}|${label.culture}`;
-      if (!modelCache.has(cacheKey)) {
-        modelCache.set(cacheKey, { lastAccess: Date.now(), labelCount: 0, ids: [] });
-      }
-      const cacheEntry = modelCache.get(cacheKey);
-      cacheEntry.labelCount++;
-      cacheEntry.ids.push(label.id);
-      
-      // BUG-24: Track indexed cultures
-      if (label.culture) {
-        indexedCultures.add(label.culture);
-      }
+      trackIndexedLabelInModelCache(label);
     }
     
     indexedLabelCount += indexedInChunk;
@@ -564,7 +663,7 @@ export async function search(query, options = {}) {
     // Level 1: Empty query or Exact Match -> Use IndexedDB cursor
     if (isBrowseMode || exactMatch) {
       if (isBrowseMode && isIndexing) {
-        console.warn('⚠️ Blocking disk browse during active ingestion. Returning RAM results only.');
+        console.warn('🛡️ Ingestion Guard: Blocking disk browse during active ingestion. Returning RAM results only.');
         // Return only what is already in FlexSearch RAM
         result = await searchFlexSearch('', { cultures, models, limit, offset });
       } else {
@@ -718,34 +817,44 @@ async function searchFlexSearch(query, options = {}) {
   }
   
   // Perform FlexSearch
+  // BUG-28: When store is false, FlexSearch returns only IDs
   const searchResults = searchIndex.search(query, {
-    limit: limit * 2, // Get extra for filtering
-    enrich: true
+    limit: limit * 5, // Get extra because we haven't filtered by culture/model yet
+    enrich: false // Set to false when store is disabled
   });
   
-  // Collect unique results
-  const idSet = new Set();
+  // searchResults is now just an array of IDs (or array of field results with IDs)
+  let resultIds = [];
+  if (Array.isArray(searchResults)) {
+    // If it's a Document search, it returns [{ field, result: [ids...] }]
+    searchResults.forEach(fieldRes => {
+      if (fieldRes.result) {
+        resultIds = resultIds.concat(fieldRes.result);
+      } else {
+        // Fallback for simple index
+        resultIds.push(fieldRes);
+      }
+    });
+  }
+
+  // Deduplicate result IDs
+  const uniqueIds = [...new Set(resultIds)];
+  
+  // JIT Retrieval: Fetch ONLY the labels we need for this page
+  // We fetch a bit more to allow for culture/model filtering
+  const candidateLabels = await fetchDocsFromDb(uniqueIds);
+  
   const matchedLabels = [];
-  
-  searchResults.forEach(fieldResult => {
-    if (fieldResult.result) {
-      fieldResult.result.forEach(item => {
-        if (!idSet.has(item.id)) {
-          const label = item.doc;
-          
-          // Apply filters
-          let matches = true;
-          if (models.length > 0 && !models.includes(label.model)) matches = false;
-          if (cultures.length > 0 && !cultures.includes(label.culture)) matches = false;
-          
-          if (matches) {
-            idSet.add(item.id);
-            matchedLabels.push(label);
-          }
-        }
-      });
+  for (const label of candidateLabels) {
+    let matches = true;
+    if (models.length > 0 && !models.includes(label.model)) matches = false;
+    if (cultures.length > 0 && !cultures.includes(label.culture)) matches = false;
+    
+    if (matches) {
+      matchedLabels.push(label);
+      if (matchedLabels.length >= limit) break;
     }
-  });
+  }
   
   // Update LRU timestamps
   if (singleModel && singleCulture) {
@@ -755,6 +864,12 @@ async function searchFlexSearch(query, options = {}) {
     }
   }
   
+  // RAM Telemetry
+  if (performance.memory) {
+    const usage = Math.round(performance.memory.usedJSHeapSize / 1048576);
+    console.log(`📊 RAM Usage: ${usage}MB | Indexed IDs: ${indexedIds.size} | Cache: ${modelCache.size} models`);
+  }
+
   // FALLBACK: Smart fallback based on coverage and load state.
   // SAFETY: Do NOT fallback to disk if we are currently indexing to prevent DB lock.
   const isIndexing = window.appState?.indexingMode !== 'idle';
@@ -801,7 +916,7 @@ async function ensureModelLoaded(model, culture) {
   }
   
   // Check if we need to evict (LRU)
-  if (modelCache.size >= searchSettings.maxModelsInMemory) {
+  if (modelCache.size >= getMaxModelsInMemory()) {
     await evictLRU();
   }
   
@@ -812,7 +927,7 @@ async function ensureModelLoaded(model, culture) {
 /**
  * Evict least recently used model from FlexSearch
  */
-async function evictLRU() {
+function evictLRUSync() {
   let oldest = null;
   let oldestKey = null;
   
@@ -827,14 +942,26 @@ async function evictLRU() {
     console.log(`🗑️ LRU Eviction: Removing ${oldestKey} from FlexSearch`);
     
     // Remove labels from this model from FlexSearch
+    let removedCount = 0;
     if (oldest && oldest.ids) {
       oldest.ids.forEach((id) => {
-        searchIndex.remove(id);
-        indexedIds.delete(id);
+        if (indexedIds.delete(id)) {
+          removedCount++;
+        }
+        searchIndex?.remove(id);
       });
     }
+    if (removedCount > 0) {
+      indexedLabelCount = Math.max(0, indexedLabelCount - removedCount);
+    }
     modelCache.delete(oldestKey);
+    return removedCount;
   }
+  return 0;
+}
+
+async function evictLRU() {
+  evictLRUSync();
 }
 
 /**
@@ -934,10 +1061,7 @@ async function loadModelIntoFlexSearch(model, culture) {
             cursor.continue();
             return;
           }
-          const doc = {
-            ...label,
-            searchTarget: `${label.labelId} ${label.text} ${label.help || ''} ${label.fullId}`
-          };
+          const doc = createSearchDoc(label);
           searchIndex.add(doc);
           indexedIds.add(label.id);
           loadedIds.push(label.id);
@@ -965,7 +1089,7 @@ async function loadModelIntoFlexSearch(model, culture) {
  * @param {string} query
  * @param {number} limit
  */
-export async function preloadModelsByName(query, limit = 3) {
+export async function preloadModelsByName(query, limit = 3, preferredCultures = null) {
   const normalized = (query || '').trim().toLowerCase();
   if (!normalized) return;
   if (!searchIndex) {
@@ -996,14 +1120,19 @@ export async function preloadModelsByName(query, limit = 3) {
   const targetModels = models
     .filter((model) => model.toLowerCase().includes(normalized))
     .slice(0, limit);
+  const priorityCandidates = [
+    ...normalizeFilterArray(preferredCultures),
+    ...normalizeFilterArray(searchSettings.priorityLanguages)
+  ];
+  const priorityCulture = priorityCandidates.find((culture) => !!culture) || 'en-US';
 
   for (const model of targetModels) {
     const relatedKeys = [...modelCache.keys()].filter((cacheKey) => cacheKey.startsWith(`${model}|`));
     if (relatedKeys.length > 0) continue;
-    if (modelCache.size >= searchSettings.maxModelsInMemory) {
+    if (modelCache.size >= getMaxModelsInMemory()) {
       await evictLRU();
     }
-    await loadModelIntoFlexSearch(model, null);
+    await loadModelIntoFlexSearch(model, priorityCulture);
   }
 }
 

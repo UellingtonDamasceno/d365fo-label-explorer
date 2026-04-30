@@ -458,7 +458,9 @@ export function createExtractorController(deps) {
     }
 
     const hasPending = rows.some((item) => item.status === 'pending');
-    const hasConfirmed = rows.some((item) => item.status === 'confirmed' || item.status === 'reused');
+    const hasConfirmed = rows.some((item) =>
+      item.status === 'confirmed' || item.status === 'reused' || item.status === 'write_error'
+    );
 
     if (elements.btnExtractorAddAll) elements.btnExtractorAddAll.disabled = !hasPending;
     if (elements.btnExtractorApply) elements.btnExtractorApply.disabled = !hasConfirmed;
@@ -629,7 +631,43 @@ export function createExtractorController(deps) {
     });
   }
 
+  async function processSelectedProject(fileName, content) {
+    const manifest = parseRnrprojManifest(content);
+
+    extractorState.projectName = String(fileName || '').replace(/\.rnrproj$/i, '');
+    extractorState.projectModel = manifest.model || '';
+    extractorState.sessionId = createExtractorSessionId(extractorState.projectModel);
+
+    showSuccess(t('extractor_project_loaded', { name: extractorState.projectName, files: manifest.includes.length }));
+
+    if (state.directoryHandle && manifest.includes.length > 0) {
+      await loadProjectFilesFromManifest(manifest);
+    }
+
+    renderExtractorFileTree();
+    renderExtractorSummary();
+  }
+
   async function handleExtractorSelectProject() {
+    if (!('showOpenFilePicker' in window)) {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.rnrproj,application/xml,text/xml';
+      input.multiple = false;
+      input.onchange = async () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        try {
+          await processSelectedProject(file.name, await file.text());
+        } catch (err) {
+          console.error('Failed to load project (fallback picker):', err);
+          showError(t('extractor_project_error') || 'Failed to load project file');
+        }
+      };
+      input.click();
+      return;
+    }
+
     try {
       const [fileHandle] = await window.showOpenFilePicker({
         types: [{
@@ -640,24 +678,7 @@ export function createExtractorController(deps) {
       });
 
       const file = await fileHandle.getFile();
-      const content = await file.text();
-      const manifest = parseRnrprojManifest(content);
-
-      extractorState.projectName = file.name.replace('.rnrproj', '');
-      extractorState.projectModel = manifest.model || '';
-      extractorState.sessionId = createExtractorSessionId(extractorState.projectModel);
-
-      extractorState.projectHandle = fileHandle;
-      extractorState.projectManifest = manifest;
-
-      showSuccess(t('extractor_project_loaded', { name: extractorState.projectName, files: manifest.includes.length }));
-
-      if (state.dirHandle && manifest.includes.length > 0) {
-        await loadProjectFilesFromManifest(manifest);
-      }
-
-      renderExtractorFileTree();
-      renderExtractorSummary();
+      await processSelectedProject(file.name, await file.text());
     } catch (err) {
       if (err.name !== 'AbortError') {
         console.error('Failed to load project:', err);
@@ -756,7 +777,7 @@ export function createExtractorController(deps) {
 
   async function handleExtractorApplyChanges() {
     const confirmed = extractorState.candidates.filter(
-      (item) => item.status === 'confirmed' || item.status === 'reused'
+      (item) => item.status === 'confirmed' || item.status === 'reused' || item.status === 'write_error'
     );
 
     if (confirmed.length === 0) {
@@ -799,68 +820,110 @@ export function createExtractorController(deps) {
       updateExtractorProgress(20, t('extractor_processing_replacements') || 'Processing replacements...');
 
       const modifiedFilesMap = new Map();
-      const newLabelsForBuilder = [];
+      const candidateFileMap = new Map();
 
       confirmed.forEach((candidate) => {
         const labelId = candidate.suggestedId;
         const labelRef = `@${extractorState.projectModel}:${labelId}`;
+        const candidateOccurrences = Array.isArray(candidate.occurrences) && candidate.occurrences.length > 0
+          ? candidate.occurrences
+          : (candidate.contexts || []);
+        const candidateFiles = new Set();
 
-        newLabelsForBuilder.push({
-          labelId,
-          text: candidate.text,
-          culture: state.ai.sourceLanguage || 'en-US',
-          prefix: extractorState.projectModel,
-          source: `Extractor (${extractorState.projectName || 'Refactor'})`
-        });
-
-        candidate.occurrences.forEach((occ) => {
+        candidateOccurrences.forEach((occ) => {
           const file = extractorState.files.find((f) => f.name === occ.file);
           if (!file) return;
+          candidateFiles.add(file.name);
 
           let content = modifiedFilesMap.get(file.name) || file.content;
 
           if (file.name.endsWith('.xml')) {
             const tagPattern = new RegExp(`(<(Label|HelpText|Caption|Description|DeveloperDocumentation)>)${escapeRegExp(candidate.text)}(</\\2>)`, 'g');
-            content = content.replace(tagPattern, `$1${labelRef}$3`);
+            content = content.replace(tagPattern, (_match, openTag, _tagName, closeTag) => `${openTag}${labelRef}${closeTag}`);
           } else {
             const stringPattern = new RegExp(`"${escapeRegExp(candidate.text)}"`, 'g');
-            content = content.replace(stringPattern, `"${labelRef}"`);
+            content = content.replace(stringPattern, () => `"${labelRef}"`);
           }
 
           modifiedFilesMap.set(file.name, content);
         });
+
+        candidateFileMap.set(candidate, candidateFiles);
       });
 
       updateExtractorProgress(50, t('extractor_writing_files') || 'Writing files to disk...');
 
       let writtenCount = 0;
+      const failedFiles = new Set();
       for (const [fileName, content] of modifiedFilesMap.entries()) {
         try {
           const fileHandle = await resolveFileHandle(fileName);
-          if (fileHandle) {
-            await fileAccess.writeFileAsText(fileHandle, content);
-            writtenCount++;
-
-            const fileObj = extractorState.files.find((f) => f.name === fileName);
-            if (fileObj) fileObj.content = content;
+          if (!fileHandle) {
+            failedFiles.add(fileName);
+            continue;
           }
+
+          await fileAccess.writeFileAsText(fileHandle, content);
+          writtenCount++;
+
+          const fileObj = extractorState.files.find((f) => f.name === fileName);
+          if (fileObj) fileObj.content = content;
         } catch (writeErr) {
           console.error(`Failed to write file ${fileName}:`, writeErr);
+          failedFiles.add(fileName);
         }
       }
 
+      const successfulCandidates = confirmed.filter((candidate) => {
+        const candidateFiles = candidateFileMap.get(candidate);
+        if (!candidateFiles || candidateFiles.size === 0) return false;
+        for (const fileName of candidateFiles) {
+          if (failedFiles.has(fileName)) {
+            return false;
+          }
+        }
+        return true;
+      });
+
       updateExtractorProgress(80, t('extractor_adding_to_builder') || 'Adding to Builder...');
-      for (const label of newLabelsForBuilder) {
+      for (const candidate of successfulCandidates) {
+        const label = {
+          labelId: candidate.suggestedId,
+          text: candidate.text,
+          culture: state.ai.sourceLanguage || 'en-US',
+          prefix: extractorState.projectModel,
+          source: `Extractor (${extractorState.projectName || 'Refactor'})`
+        };
         await addLabelToBuilder(label);
       }
 
-      extractorState.candidates = extractorState.candidates.filter(
-        (item) => item.status !== 'confirmed' && item.status !== 'reused'
-      );
+      const processedStatuses = new Set(['confirmed', 'reused', 'write_error']);
+      if (failedFiles.size > 0) {
+        showError(
+          t('extractor_apply_partial_error', { count: failedFiles.size }) ||
+          `Failed to write ${failedFiles.size} file(s). Related candidates were kept for retry.`
+        );
+      }
+
+      extractorState.candidates = extractorState.candidates.flatMap((item) => {
+        if (!processedStatuses.has(item.status)) {
+          return [item];
+        }
+
+        const candidateFiles = candidateFileMap.get(item);
+        const hasFailedWrite = !candidateFiles ||
+          candidateFiles.size === 0 ||
+          [...candidateFiles].some((fileName) => failedFiles.has(fileName));
+
+        if (hasFailedWrite) {
+          return [{ ...item, status: 'write_error' }];
+        }
+        return [];
+      });
 
       updateExtractorProgress(100, t('extractor_apply_complete') || 'Refactoring complete!');
-      showSuccess(t('extractor_apply_success', { count: confirmed.length, files: writtenCount }) ||
-        `Successfully refactored ${confirmed.length} strings across ${writtenCount} files.`);
+      showSuccess(t('extractor_apply_success', { count: successfulCandidates.length, files: writtenCount }) ||
+        `Successfully refactored ${successfulCandidates.length} strings across ${writtenCount} files.`);
 
       renderExtractorResults();
       renderExtractorSummary();

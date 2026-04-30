@@ -8,7 +8,7 @@
  * @param {string} string 
  * @returns {string}
  */
-function escapeRegExp(string) {
+export function escapeRegExp(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
@@ -49,6 +49,21 @@ export function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+/**
+ * Escape text for HTML attributes
+ * @param {string} text
+ * @returns {string}
+ */
+export function escapeAttr(text) {
+  if (!text) return '';
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 /**

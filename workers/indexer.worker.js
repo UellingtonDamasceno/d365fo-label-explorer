@@ -10,9 +10,10 @@ importScripts('./utils/label-parser.js');
 
 let runtimeDbName = null;
 let runtimeDbVersion = null;
+let openWorkerDBBridge = null;
 
 // Smart Batching Constants
-const BATCH_SIZE = 5000;          // Write every 5000 labels
+const BATCH_SIZE = 1000;          // Reduced from 5000 to prevent RAM spikes in Main Thread
 const FILE_CONCURRENCY = 3;       // Reduced to lower contention
 const PROGRESS_INTERVAL = 10;     // Report every N files
 
@@ -22,29 +23,28 @@ let pendingWrites = [];           // Track fire-and-forget promises
 /**
  * Initialize IndexedDB connection in worker
  */
+async function resolveOpenWorkerDB() {
+  if (openWorkerDBBridge) return openWorkerDBBridge;
+  const mod = await import('../core/db-connection.js');
+  if (typeof mod.openWorkerDB !== 'function') {
+    throw new Error('openWorkerDB is not available in core/db-connection.js');
+  }
+  openWorkerDBBridge = mod.openWorkerDB;
+  return openWorkerDBBridge;
+}
+
 async function initDB() {
   if (db) return db;
   if (!runtimeDbName || typeof runtimeDbVersion !== 'number') {
     throw new Error('Worker DB configuration missing. Pass dbName and dbVersion from app.js.');
   }
-
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(runtimeDbName, runtimeDbVersion);
-
-    request.onerror = () => reject(new Error('Worker: Failed to open IndexedDB'));
-    
-    request.onsuccess = () => {
-      db = request.result;
-      db.onversionchange = () => {
-        db.close();
-        db = null;
-      };
-      resolve(db);
-    };
-    request.onblocked = () => {
-      console.warn('[Indexer Worker] DB open blocked by another tab/upgrade.');
-    };
-  });
+  const openWorkerDB = await resolveOpenWorkerDB();
+  db = await openWorkerDB({ dbName: runtimeDbName, dbVersion: runtimeDbVersion });
+  db.onversionchange = () => {
+    db.close();
+    db = null;
+  };
+  return db;
 }
 
 /**
@@ -140,10 +140,9 @@ function saveBloomFilter(model, culture, buffer) {
 }
 
 /**
- * Parse a single file and return labels array (pure CPU, no I/O blocking)
+ * Enrich parsed labels with search helper fields
  */
-function parseFileContent(content, metadata) {
-  const labels = self.SharedLabelParser.parseLabelFile(content, metadata);
+function enrichLabelsForSearch(labels) {
   for (let i = 0; i < labels.length; i++) {
     const label = labels[i];
     const normalizedText = (label.text || '').toLowerCase();
@@ -152,7 +151,20 @@ function parseFileContent(content, metadata) {
     label.s = searchTarget;
     label.tokens = [...new Set(searchTarget.split(/[\W_]+/).filter((t) => t.length > 2))];
   }
-  return labels;
+}
+
+function createFlexSearchDoc(label) {
+  return {
+    id: label.id,
+    fullId: label.fullId || '',
+    labelId: label.labelId || '',
+    text: label.text || '',
+    help: label.help || '',
+    model: label.model || '',
+    culture: label.culture || '',
+    prefix: label.prefix || '',
+    searchTarget: `${label.labelId || ''} ${label.text || ''} ${label.help || ''} ${label.fullId || ''}`.trim()
+  };
 }
 
 /**
@@ -165,7 +177,8 @@ async function processFile({ handle, metadata }) {
     const file = await handle.getFile();
     const sizeBytes = file.size || 0;
     const content = await file.text();
-    const labels = parseFileContent(content, metadata);
+    const labels = self.SharedLabelParser.parseLabelFile(content, metadata);
+    enrichLabelsForSearch(labels);
     const durationMs = Math.max(0, performance.now() - perfStart);
     const endedAt = Date.now();
     return {
@@ -202,9 +215,6 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
   let totalLabels = 0;
   let errors = [];
   
-  // SPEC-42: Global Bloom Filter for cross-model searches
-  const globalBloomFilter = new BloomFilter({ expectedItems: 1000000, falsePositiveRate: 0.01 });
-  
   // Smart batch buffer (max 5000 labels)
   let batchBuffer = [];
   const pairStats = new Map();
@@ -224,7 +234,11 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
     if (!pairStats.has(key)) {
         // SPEC-42: Initialize Bloom Filter and FlexSearch for this pair
         const flexIndex = new self.FlexSearch.Document({
-          document: { id: 'id', index: ['searchTarget'], store: true },
+          document: {
+            id: 'id',
+            index: ['searchTarget'],
+            store: ['id', 'fullId', 'labelId', 'text', 'help', 'model', 'culture', 'prefix']
+          },
           tokenize: 'forward', resolution: 9, cache: true
         });
         
@@ -271,11 +285,6 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
         // Add to batch buffer and populate Search Structures
         for (const label of result.labels) {
           batchBuffer.push(label);
-          
-          // SPEC-42: Populate Global Bloom Filter
-          globalBloomFilter.addText(label.text);
-          globalBloomFilter.addText(label.labelId);
-          globalBloomFilter.addText(label.help);
 
           if (pairEntry) {
             // SPEC-42: Populate Local Bloom Filter
@@ -284,10 +293,7 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
             pairEntry.bloomFilter.addText(label.help);
             
             // SPEC-42: Populate FlexSearch
-            pairEntry.flexIndex.add({
-              ...label,
-              searchTarget: `${label.labelId} ${label.text} ${label.help || ''} ${label.fullId}`
-            });
+            pairEntry.flexIndex.add(createFlexSearchDoc(label));
           }
         }
         
@@ -367,11 +373,6 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
     }
   }
   
-  // SPEC-42: Save Global Bloom Filter
-  if (totalLabels > 0) {
-    console.log('🌍 Saving Global Bloom Filter...');
-    saveBloomFilter('global', 'all', globalBloomFilter.export());
-  }
   console.timeEnd('⏱️ Export Search Indices');
 
   // Wait for all pending writes to complete
@@ -407,7 +408,8 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
  */
 async function processFileFromContent(content, metadata) {
   await initDB();
-  const labels = parseFileContent(content, metadata);
+  const labels = self.SharedLabelParser.parseLabelFile(content, metadata);
+  enrichLabelsForSearch(labels);
   
   if (labels.length > 0) {
     await saveBatchFireAndForget(labels);
@@ -428,7 +430,8 @@ async function processFileFast(fileHandle, metadata) {
     
     const file = await fileHandle.getFile();
     const content = await file.text();
-    const labels = parseFileContent(content, metadata);
+    const labels = self.SharedLabelParser.parseLabelFile(content, metadata);
+    enrichLabelsForSearch(labels);
     
     if (labels.length > 0) {
       await saveBatchFireAndForget(labels);

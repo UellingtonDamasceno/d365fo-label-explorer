@@ -15,6 +15,9 @@ function createElementsProxy(getElements) {
 export function createSearchUIController({
   getElements,
   state,
+  searchService,
+  t,
+  showError,
   highlight,
   escapeHtml,
   escapeAttr,
@@ -22,8 +25,6 @@ export function createSearchUIController({
   formatLanguageDisplay,
   showInfo,
   saveFiltersToDb,
-  invalidateSearchCache,
-  handleSearch,
   closeAdvancedSearchModal,
   getLanguageAggregateStatus,
   showLabelDetailsModal,
@@ -168,7 +169,7 @@ export function createSearchUIController({
         
         saveFiltersToDb();
         renderFilterPills();
-        invalidateSearchCache?.();
+        searchService.invalidateSearchCache?.();
         handleSearch();
       });
     });
@@ -178,6 +179,197 @@ export function createSearchUIController({
     state.filters.models = [...new Set(state.filters.models || [])];
     state.filters.cultures = [...new Set(state.filters.cultures || [])];
     state.filters.requiredCultures = [...new Set(state.filters.requiredCultures || [])];
+  }
+
+  /**
+   * Handle search - SPEC-19 Hybrid Search (async)
+   * SPEC-42: Incremental Loading Support
+   */
+  async function handleSearch(isLoadMore = false) {
+    const MAX_ACCUMULATED_RESULTS = 2000;
+    if (state.searchPagination.isLoading) return;
+    if (isLoadMore && !state.searchPagination.hasMore) return;
+
+    const query = state.currentQuery.trim();
+    
+    if (!isLoadMore) {
+      state.searchPagination.offset = 0;
+      state.searchPagination.hasMore = true;
+      state.results = [];
+      state.groupedResults = [];
+      if (elements.resultsViewport) elements.resultsViewport.scrollTop = 0;
+    }
+
+    state.searchPagination.isLoading = true;
+
+    try {
+      if (query && !isLoadMore) {
+        showLoading();
+      }
+      
+      const startTime = performance.now();
+      
+      const filterOptions = {
+        exactMatch: state.filters.exactMatch,
+        useBloomFilter: state.filters.useBloomFilter,
+        limit: state.searchPagination.limit,
+        offset: state.searchPagination.offset,
+        cultures: [...state.filters.cultures],
+        models: [...state.filters.models]
+      };
+
+      if (query.length >= 2 && searchService.getStats().totalIndexed === 0 && state.indexingMode !== 'idle') {
+        await searchService.preloadModelsByName(query, 3);
+      }
+      
+      let newResults = await searchService.search(query, filterOptions);
+      
+      if (state.filters.cultures.length > 0) {
+        newResults = newResults.filter(l => state.filters.cultures.includes(l.culture));
+      }
+      if (state.filters.models.length > 0) {
+        newResults = newResults.filter(l => state.filters.models.includes(l.model));
+      }
+      
+      if (newResults.length < state.searchPagination.limit) {
+        state.searchPagination.hasMore = false;
+      }
+      state.searchPagination.offset += state.searchPagination.limit;
+      
+      state.results = isLoadMore ? [...state.results, ...newResults] : newResults;
+      if (state.results.length >= MAX_ACCUMULATED_RESULTS) {
+        if (state.results.length > MAX_ACCUMULATED_RESULTS) {
+          state.results = state.results.slice(0, MAX_ACCUMULATED_RESULTS);
+        }
+        state.searchPagination.hasMore = false;
+      }
+      
+      const searchTime = performance.now() - startTime;
+      console.log(`🔍 Search "${query}" returned ${newResults.length} new results in ${searchTime.toFixed(2)}ms`);
+      
+      if (state.displaySettings.groupDuplicates) {
+        state.groupedResults = groupDuplicateLabels(state.results);
+      } else {
+        state.groupedResults = state.results.map(label => ({
+          ...label,
+          occurrences: [label],
+          count: 1
+        }));
+      }
+
+      applyComplianceFilters();
+      applySorting();
+    } catch (err) {
+      console.error('❌ Search failed:', err);
+      showError(t('toast_search_error') || 'Search failed');
+    } finally {
+      state.searchPagination.isLoading = false;
+    }
+
+    const totalCountText = state.groupedResults.length.toLocaleString() + (state.searchPagination.hasMore ? '+' : '');
+    if (elements.resultsCount) elements.resultsCount.textContent = totalCountText;
+    if (query && elements.searchInfo) {
+      const pendingCount = state.groupedResults.filter(g => g.compliance && !g.compliance.isComplete).length;
+      elements.searchInfo.textContent =
+        state.filters.requiredCultures.length > 0
+          ? `Found ${totalCountText} labels (${pendingCount} with missing translations)`
+          : `Found ${totalCountText} unique labels`;
+    } else if (elements.searchInfo) {
+      elements.searchInfo.textContent = '';
+    }
+    
+    if (state.groupedResults.length === 0 && !query) {
+      showEmptyState();
+    } else if (state.groupedResults.length === 0) {
+      showNoResults();
+    } else {
+      renderVirtualScroll();
+    }
+  }
+
+  function applyComplianceFilters() {
+    if (!state.filters.requiredCultures || state.filters.requiredCultures.length === 0) {
+      return;
+    }
+
+    const requiredSet = new Set(state.filters.requiredCultures);
+    const checked = [];
+    for (const group of state.groupedResults) {
+      const occurrences = group.occurrences || [group];
+      const groupCultures = new Set(occurrences.map(o => o.culture));
+      const presentRequired = state.filters.requiredCultures.filter(c => groupCultures.has(c));
+      if (presentRequired.length === 0) {
+        continue;
+      }
+      const missing = state.filters.requiredCultures.filter(c => !groupCultures.has(c));
+      const isComplete = missing.length === 0 && requiredSet.size > 0;
+      if (state.filters.hideIncomplete && !isComplete) {
+        continue;
+      }
+      checked.push({
+        ...group,
+        compliance: {
+          isComplete,
+          missing
+        }
+      });
+    }
+    state.groupedResults = checked;
+  }
+
+  function groupDuplicateLabels(labels) {
+    const groupMap = new Map();
+    labels.forEach(label => {
+      const key = `${label.labelId}\x00${label.text}\x00${label.help || ''}`;
+      if (groupMap.has(key)) {
+        groupMap.get(key).occurrences.push(label);
+      } else {
+        groupMap.set(key, {
+          ...label,
+          occurrences: [label],
+          count: 1
+        });
+      }
+    });
+    const grouped = Array.from(groupMap.values());
+    grouped.forEach(group => {
+      group.count = group.occurrences.length;
+    });
+    return grouped;
+  }
+
+  function applySorting() {
+    if (!state.groupedResults || state.groupedResults.length <= 1) {
+      return;
+    }
+    if (state.sortPreference === 'relevance') {
+      return;
+    }
+    const collator = new Intl.Collator(undefined, { sensitivity: 'base', numeric: true });
+    const getPrimary = (group) => (group?.occurrences?.[0] || group || {});
+    state.groupedResults.sort((a, b) => {
+      const aPrimary = getPrimary(a);
+      const bPrimary = getPrimary(b);
+      switch (state.sortPreference) {
+        case 'labelId-asc':
+          return collator.compare(aPrimary.labelId || '', bPrimary.labelId || '');
+        case 'labelId-desc':
+          return collator.compare(bPrimary.labelId || '', aPrimary.labelId || '');
+        case 'text-asc':
+          return collator.compare(aPrimary.text || '', bPrimary.text || '');
+        case 'text-desc':
+          return collator.compare(bPrimary.text || '', aPrimary.text || '');
+        case 'model-asc': {
+          const modelCompare = collator.compare(aPrimary.model || '', bPrimary.model || '');
+          if (modelCompare !== 0) return modelCompare;
+          const aPrefix = (aPrimary.fullId || '').split(':')[0];
+          const bPrefix = (bPrimary.fullId || '').split(':')[0];
+          return collator.compare(aPrefix, bPrefix);
+        }
+        default:
+          return 0;
+      }
+    });
   }
 
   function showEmptyState() {
@@ -388,6 +580,55 @@ export function createSearchUIController({
     `;
   }
 
+  /**
+   * Show label details modal
+   */
+  function showLabelDetailsModal(group) {
+    if (!elements.labelDetailsModal || !elements.labelDetailsContent) return;
+    
+    const occurrences = group.occurrences || [group];
+    
+    let html = `
+      <div class="label-details-header">
+        <h4>${escapeHtml(group.labelId)}</h4>
+        <p class="label-details-text">${escapeHtml(group.text)}</p>
+        ${group.help ? `<p class="label-details-help">${escapeHtml(group.help)}</p>` : ''}
+      </div>
+      <div class="label-details-list">
+        <h5>Found in ${occurrences.length} ${occurrences.length === 1 ? 'model' : 'models'}:</h5>
+    `;
+    
+    occurrences.forEach(occurrence => {
+      html += `
+        <div class="occurrence-item">
+          <div class="occurrence-header">
+            <span class="occurrence-model">📦 ${escapeHtml(occurrence.model)}</span>
+            <span class="occurrence-culture">${formatLanguageDisplay(occurrence.culture)}</span>
+          </div>
+          <div class="occurrence-path">
+            Code: <code>${escapeHtml(occurrence.filePath)}</code>
+          </div>
+          <div class="occurrence-id">
+            <strong>Full ID:</strong> <code>${escapeHtml(occurrence.fullId)}</code>
+          </div>
+        </div>
+      `;
+    });
+    
+    html += `</div>`;
+    
+    elements.labelDetailsContent.innerHTML = html;
+    elements.labelDetailsModal.classList.remove('hidden');
+  }
+
+  /**
+   * Close label details modal
+   */
+  function closeLabelDetailsModal() {
+    if (!elements.labelDetailsModal) return;
+    elements.labelDetailsModal.classList.add('hidden');
+  }
+
   function setupModalFilterListeners() {
     // Exact match toggle
     elements.modalExactMatch?.addEventListener('change', (e) => {
@@ -415,7 +656,7 @@ export function createSearchUIController({
     closeAdvancedSearchModal();
     
     // Trigger search with new settings
-    invalidateSearchCache?.();
+    searchService.invalidateSearchCache?.();
     handleSearch();
     
     showInfo('Advanced search filters applied');
@@ -438,7 +679,7 @@ export function createSearchUIController({
     renderFilterPills();
     
     // Trigger search
-    invalidateSearchCache?.();
+    searchService.invalidateSearchCache?.();
     handleSearch();
     
     showInfo('All filters cleared');
@@ -559,7 +800,7 @@ export function createSearchUIController({
     normalizeFilterState();
     saveFiltersToDb();
     renderFilterPills();
-    invalidateSearchCache?.();
+    searchService.invalidateSearchCache?.();
     handleSearch();
   }
 
@@ -578,6 +819,9 @@ export function createSearchUIController({
     handleResize,
     renderVirtualScroll,
     renderLabelCard,
+    handleSearch,
+    showLabelDetailsModal,
+    closeLabelDetailsModal,
     setupModalFilterListeners,
     applyFilters,
     clearAllFilters,

@@ -7,148 +7,57 @@ function createElementsProxy(getElements) {
 }
 
 export function createEventController(deps) {
-  const {
-    getElements,
-    state,
-    builderState,
-    debounce,
-    copyToClipboard,
-    showSuccess,
-    t,
-    handleSelectFolder,
-    handleChangeFolder,
-    handleToggleSelection,
-    openLanguageFilterModal,
-    handleStartIndexing,
-    handleCancelRescan,
-    openAdvancedSelectionModal,
-    closeAdvancedSelectionModal,
-    handleQuickStart,
-    closeLanguageFilterModal,
-    toggleAllLanguagesFilter,
-    applyLanguageFilter,
-    renderLanguageFilterList,
-    handleRescan,
-    openShortcutsModal,
-    openStatsDashboardModal,
-    openBackgroundProgressModal,
-    closeBackgroundProgressModal,
-    closeStatsDashboardModal,
-    handleSearch,
-    scheduleLikelyPrefetch,
-    saveSortPreferenceToDb,
-    openAdvancedSearchModal,
-    openSystemSettingsModal,
-    closeAdvancedSearchModal,
-    closeSystemSettingsModal,
-    applyFilters,
-    applySystemSettings,
-    clearAllFilters,
-    startAiModelDownload,
-    clearAiCache,
-    updateAiSettingsUI,
-    saveAiSettingsToDb,
-    openItemSelectorModal,
-    closeItemSelectorModal,
-    toggleAllInSelectorModal,
-    renderItemSelectorModal,
-    closeLabelDetailsModal,
-    closeShortcutsModal,
-    openToolsModal,
-    closeToolsModal,
-    openMergerModal,
-    openExtractorWorkspace,
-    closeMergerModal,
-    handleMergerSelectFiles,
-    handleMergerClearFiles,
-    handleMergerBack,
-    handleMergerMerge,
-    handleMergerDownload,
-    setupMergerDropzone,
-    openBuilderModal,
-    closeBuilderModal,
-    openNewLabelModal,
-    handleBuilderClear,
-    handleBuilderFinish,
-    openExportModal,
-    handleBuilderAutoTranslate,
-    switchBuilderTab,
-    closeNewLabelModal,
-    handleSaveNewLabel,
-    closeConflictModal,
-    resolveConflict,
-    openManualConflictEditor,
-    closeExportModal,
-    handleExportGenerate,
-    closeExtractorWorkspace,
-    handleExtractorSelectProject,
-    handleExtractorSelectFiles,
-    handleExtractorStartScan,
-    handleExtractorAddAllToBuilder,
-    handleExtractorApplyChanges,
-    handleExtractorRollback,
-    handleScroll,
-    handleResize,
-    setupModalFilterListeners,
-    setupSelectionListeners,
-    removeBuilderItem,
-    undoBuilderChange,
-    handleUndoSelection,
-    updateKeyboardSelection,
-    showLabelDetailsModal,
-    addLabelToBuilder
-  } = deps;
-
-  const elements = createElementsProxy(getElements);
+  const elements = createElementsProxy(deps.getElements);
+  const { state, builderState, t, debounce } = deps;
 
   function setupEventListeners() {
     // Onboarding
-    elements.btnSelectFolder?.addEventListener('click', handleSelectFolder);
-    elements.btnChangeFolder?.addEventListener('click', handleSelectFolder);
-    elements.btnHeaderChangeFolder?.addEventListener('click', handleChangeFolder);
+    elements.btnSelectFolder?.addEventListener('click', deps.handleSelectFolder);
+    elements.btnChangeFolder?.addEventListener('click', deps.handleSelectFolder);
+    elements.btnHeaderChangeFolder?.addEventListener('click', deps.handleChangeFolder);
     
     // Dashboard - Smart toggle selection button
-    elements.btnToggleSelection?.addEventListener('click', handleToggleSelection);
-    elements.btnOpenLanguageFilter?.addEventListener('click', openLanguageFilterModal);
-    elements.btnStartIndexing?.addEventListener('click', handleStartIndexing);
-    elements.btnCancelRescan?.addEventListener('click', handleCancelRescan);
-    elements.btnOpenAdvancedSelection?.addEventListener('click', openAdvancedSelectionModal);
-    elements.btnCloseAdvancedSelectionModal?.addEventListener('click', closeAdvancedSelectionModal);
-    elements.btnCloseAdvancedSelection?.addEventListener('click', closeAdvancedSelectionModal);
+    elements.btnToggleSelection?.addEventListener('click', deps.handleToggleSelection);
+    elements.btnOpenLanguageFilter?.addEventListener('click', deps.openLanguageFilterModal);
+    elements.btnStartIndexing?.addEventListener('click', deps.handleStartIndexing);
+    elements.btnCancelRescan?.addEventListener('click', deps.handleCancelRescan);
+    elements.btnOpenAdvancedSelection?.addEventListener('click', deps.openAdvancedSelectionModal);
+    elements.btnCloseAdvancedSelectionModal?.addEventListener('click', deps.closeAdvancedSelectionModal);
+    elements.btnCloseAdvancedSelection?.addEventListener('click', deps.closeAdvancedSelectionModal);
     elements.btnStartIndexingModal?.addEventListener('click', () => {
-      closeAdvancedSelectionModal();
-      handleStartIndexing();
+      deps.closeAdvancedSelectionModal();
+      deps.handleStartIndexing();
     });
     
     // SPEC-23: Quick Start (Priority Languages)
-    elements.btnQuickStart?.addEventListener('click', handleQuickStart);
+    elements.btnQuickStart?.addEventListener('click', deps.handleQuickStart);
     
     // Language Filter Modal
-    elements.btnCloseLanguageFilterModal?.addEventListener('click', closeLanguageFilterModal);
-    elements.btnToggleAllLanguages?.addEventListener('click', toggleAllLanguagesFilter);
-    elements.btnApplyLanguageFilter?.addEventListener('click', applyLanguageFilter);
-    elements.languageFilterSearch?.addEventListener('input', debounce(renderLanguageFilterList, 150));
+    elements.btnCloseLanguageFilterModal?.addEventListener('click', deps.closeLanguageFilterModal);
+    elements.btnToggleAllLanguages?.addEventListener('click', deps.toggleAllLanguagesFilter);
+    elements.btnApplyLanguageFilter?.addEventListener('click', deps.applyLanguageFilter);
+    elements.languageFilterSearch?.addEventListener('input', debounce(deps.renderLanguageFilterList, 150));
     
     // Header
-    elements.btnRescan?.addEventListener('click', handleRescan);
-    elements.btnShortcutsHelp?.addEventListener('click', openShortcutsModal);
-    elements.labelCountBadge?.addEventListener('click', openStatsDashboardModal);
+    elements.btnRescan?.addEventListener('click', deps.handleRescan);
+    elements.btnShortcutsHelp?.addEventListener('click', deps.openShortcutsModal);
+    elements.labelCountBadge?.addEventListener('click', deps.openStatsDashboardModal);
     
     // SPEC-23: Background Progress
-    elements.btnBackgroundProgress?.addEventListener('click', openBackgroundProgressModal);
-    elements.btnCloseBackgroundProgress?.addEventListener('click', closeBackgroundProgressModal);
-    elements.btnCloseStatsDashboard?.addEventListener('click', closeStatsDashboardModal);
+    elements.btnBackgroundProgress?.addEventListener('click', deps.openBackgroundProgressModal);
+    elements.btnCloseBackgroundProgress?.addEventListener('click', deps.closeBackgroundProgressModal);
+    elements.btnCloseStatsDashboard?.addEventListener('click', deps.closeStatsDashboardModal);
     
     // SPEC-41: Background Tasks button opens progress modal
-    elements.btnBackgroundTasks?.addEventListener('click', openBackgroundProgressModal);
+    elements.btnBackgroundTasks?.addEventListener('click', deps.openBackgroundProgressModal);
     
     // Search
-    const debouncedSearch = debounce(handleSearch, 300);
+    const debouncedSearch = debounce(deps.handleSearch, 300);
     elements.searchInput?.addEventListener('input', (e) => {
       state.currentQuery = e.target.value;
       elements.clearSearch.classList.toggle('hidden', !state.currentQuery);
       state.keyboardNav.selectedIndex = -1; // Reset selection on new search
-      scheduleLikelyPrefetch?.(state.currentQuery, {
+      deps.scheduleLikelyPrefetch?.(state.currentQuery, {
         cultures: [...(state.filters?.cultures || [])],
         models: [...(state.filters?.models || [])]
       });
@@ -160,29 +69,29 @@ export function createEventController(deps) {
       state.currentQuery = '';
       elements.clearSearch.classList.add('hidden');
       state.keyboardNav.selectedIndex = -1;
-      handleSearch();
+      deps.handleSearch();
     });
 
     elements.sortSelect?.addEventListener('change', (e) => {
       state.sortPreference = e.target.value;
-      saveSortPreferenceToDb();
-      handleSearch();
+      deps.saveSortPreferenceToDb();
+      deps.handleSearch();
     });
     
     // Advanced Search Modal
-    elements.btnAdvancedSearch?.addEventListener('click', openAdvancedSearchModal);
-    elements.btnSystemSettings?.addEventListener('click', openSystemSettingsModal);
-    elements.btnCloseModal?.addEventListener('click', closeAdvancedSearchModal);
-    elements.btnCloseSettingsModal?.addEventListener('click', closeSystemSettingsModal);
-    elements.btnApplyFilters?.addEventListener('click', applyFilters);
-    elements.btnApplySettings?.addEventListener('click', applySystemSettings);
-    elements.btnClearFilters?.addEventListener('click', clearAllFilters);
-    elements.btnAiDownloadModel?.addEventListener('click', startAiModelDownload);
-    elements.btnAiClearCache?.addEventListener('click', clearAiCache);
+    elements.btnAdvancedSearch?.addEventListener('click', deps.openAdvancedSearchModal);
+    elements.btnSystemSettings?.addEventListener('click', deps.openSystemSettingsModal);
+    elements.btnCloseModal?.addEventListener('click', deps.closeAdvancedSearchModal);
+    elements.btnCloseSettingsModal?.addEventListener('click', deps.closeSystemSettingsModal);
+    elements.btnApplyFilters?.addEventListener('click', deps.applyFilters);
+    elements.btnApplySettings?.addEventListener('click', deps.applySystemSettings);
+    elements.btnClearFilters?.addEventListener('click', deps.clearAllFilters);
+    elements.btnAiDownloadModel?.addEventListener('click', deps.startAiModelDownload);
+    elements.btnAiClearCache?.addEventListener('click', deps.clearAiCache);
     elements.settingAiEnabled?.addEventListener('change', (e) => {
       state.ai.enabled = e.target.checked;
-      updateAiSettingsUI();
-      saveAiSettingsToDb();
+      deps.updateAiSettingsUI();
+      deps.saveAiSettingsToDb();
     });
 
     // SPEC-19: Fuzzy threshold slider live preview
@@ -192,98 +101,98 @@ export function createEventController(deps) {
       }
     });
     
-    elements.btnOpenModelSelector?.addEventListener('click', () => openItemSelectorModal('models'));
-    elements.btnOpenLanguageSelector?.addEventListener('click', () => openItemSelectorModal('cultures'));
-    elements.btnOpenRequiredLanguageSelector?.addEventListener('click', () => openItemSelectorModal('requiredCultures'));
-    elements.btnCloseSelectorModal?.addEventListener('click', closeItemSelectorModal);
-    elements.btnCloseSelector?.addEventListener('click', closeItemSelectorModal);
-    elements.btnToggleAllSelector?.addEventListener('click', toggleAllInSelectorModal);
+    elements.btnOpenModelSelector?.addEventListener('click', () => deps.openItemSelectorModal('models'));
+    elements.btnOpenLanguageSelector?.addEventListener('click', () => deps.openItemSelectorModal('cultures'));
+    elements.btnOpenRequiredLanguageSelector?.addEventListener('click', () => deps.openItemSelectorModal('requiredCultures'));
+    elements.btnCloseSelectorModal?.addEventListener('click', deps.closeItemSelectorModal);
+    elements.btnCloseSelector?.addEventListener('click', deps.closeItemSelectorModal);
+    elements.btnToggleAllSelector?.addEventListener('click', deps.toggleAllInSelectorModal);
     elements.itemSelectorSearch?.addEventListener('input', (e) => {
       state.selectorModal.search = e.target.value || '';
-      renderItemSelectorModal();
+      deps.renderItemSelectorModal();
     });
     
     // Label Details Modal
-    elements.btnCloseDetailsModal?.addEventListener('click', closeLabelDetailsModal);
-    elements.btnCloseDetails?.addEventListener('click', closeLabelDetailsModal);
+    elements.btnCloseDetailsModal?.addEventListener('click', deps.closeLabelDetailsModal);
+    elements.btnCloseDetails?.addEventListener('click', deps.closeLabelDetailsModal);
 
     // Shortcuts Modal
-    elements.btnCloseShortcutsModal?.addEventListener('click', closeShortcutsModal);
-    elements.btnCloseShortcuts?.addEventListener('click', closeShortcutsModal);
+    elements.btnCloseShortcutsModal?.addEventListener('click', deps.closeShortcutsModal);
+    elements.btnCloseShortcuts?.addEventListener('click', deps.closeShortcutsModal);
 
     // SPEC-36: Tools Menu
-    elements.btnToolsMenu?.addEventListener('click', openToolsModal);
-    elements.btnCloseToolsModal?.addEventListener('click', closeToolsModal);
-    elements.btnCloseTools?.addEventListener('click', closeToolsModal);
+    elements.btnToolsMenu?.addEventListener('click', deps.openToolsModal);
+    elements.btnCloseToolsModal?.addEventListener('click', deps.closeToolsModal);
+    elements.btnCloseTools?.addEventListener('click', deps.closeToolsModal);
     
-    elements.btnToolMerger?.addEventListener('click', openMergerModal);
-    elements.btnToolExtractor?.addEventListener('click', openExtractorWorkspace);
+    elements.btnToolMerger?.addEventListener('click', deps.openMergerModal);
+    elements.btnToolExtractor?.addEventListener('click', deps.openExtractorWorkspace);
 
     // SPEC-36: Merger Modal
-    elements.btnCloseMergerModal?.addEventListener('click', closeMergerModal);
+    elements.btnCloseMergerModal?.addEventListener('click', deps.closeMergerModal);
     
     elements.mergerDropzone?.addEventListener('click', () => elements.btnMergerSelectFiles?.click());
-    elements.btnMergerSelectFiles?.addEventListener('click', handleMergerSelectFiles);
-    elements.btnMergerAddMore?.addEventListener('click', handleMergerSelectFiles);
-    elements.btnMergerClearFiles?.addEventListener('click', handleMergerClearFiles);
-    elements.btnMergerBack?.addEventListener('click', handleMergerBack);
+    elements.btnMergerSelectFiles?.addEventListener('click', deps.handleMergerSelectFiles);
+    elements.btnMergerAddMore?.addEventListener('click', deps.handleMergerSelectFiles);
+    elements.btnMergerClearFiles?.addEventListener('click', deps.handleMergerClearFiles);
+    elements.btnMergerBack?.addEventListener('click', deps.handleMergerBack);
     elements.btnMergerMerge?.addEventListener('click', () => {
-      handleMergerMerge().catch(() => {});
+      deps.handleMergerMerge().catch(() => {});
     });
-    elements.btnMergerDownload?.addEventListener('click', handleMergerDownload);
-    setupMergerDropzone();
+    elements.btnMergerDownload?.addEventListener('click', deps.handleMergerDownload);
+    deps.setupMergerDropzone();
 
     // SPEC-32: Builder Modal
-    elements.btnToolBuilder?.addEventListener('click', openBuilderModal);
-    elements.btnCloseBuilderModal?.addEventListener('click', closeBuilderModal);
-    elements.btnBuilderNew?.addEventListener('click', openNewLabelModal);
-    elements.btnBuilderClear?.addEventListener('click', handleBuilderClear);
-    elements.btnBuilderFinish?.addEventListener('click', handleBuilderFinish);
-    elements.btnBuilderDownload?.addEventListener('click', openExportModal);
-    elements.btnBuilderAutoTranslate?.addEventListener('click', handleBuilderAutoTranslate);
+    elements.btnToolBuilder?.addEventListener('click', deps.openBuilderModal);
+    elements.btnCloseBuilderModal?.addEventListener('click', deps.closeBuilderModal);
+    elements.btnBuilderNew?.addEventListener('click', deps.openNewLabelModal);
+    elements.btnBuilderClear?.addEventListener('click', deps.handleBuilderClear);
+    elements.btnBuilderFinish?.addEventListener('click', deps.handleBuilderFinish);
+    elements.btnBuilderDownload?.addEventListener('click', deps.openExportModal);
+    elements.btnBuilderAutoTranslate?.addEventListener('click', deps.handleBuilderAutoTranslate);
     
     // SPEC-41: Builder Tabs
-    document.getElementById('tab-workspace')?.addEventListener('click', () => switchBuilderTab('workspace'));
-    document.getElementById('tab-history')?.addEventListener('click', () => switchBuilderTab('history'));
+    document.getElementById('tab-workspace')?.addEventListener('click', () => deps.switchBuilderTab('workspace'));
+    document.getElementById('tab-history')?.addEventListener('click', () => deps.switchBuilderTab('history'));
     
     // SPEC-32: New Label Modal
-    elements.btnCloseNewLabelModal?.addEventListener('click', closeNewLabelModal);
-    elements.btnCancelNewLabel?.addEventListener('click', closeNewLabelModal);
-    elements.btnSaveNewLabel?.addEventListener('click', handleSaveNewLabel);
+    elements.btnCloseNewLabelModal?.addEventListener('click', deps.closeNewLabelModal);
+    elements.btnCancelNewLabel?.addEventListener('click', deps.closeNewLabelModal);
+    elements.btnSaveNewLabel?.addEventListener('click', deps.handleSaveNewLabel);
     
     // SPEC-32: Conflict Modal
-    elements.btnCloseConflictModal?.addEventListener('click', closeConflictModal);
-    elements.btnConflictSkip?.addEventListener('click', () => resolveConflict('skip'));
-    elements.btnConflictRename?.addEventListener('click', () => resolveConflict('rename'));
-    elements.btnConflictEdit?.addEventListener('click', openManualConflictEditor);
-    elements.btnConflictOverwrite?.addEventListener('click', () => resolveConflict('overwrite'));
+    elements.btnCloseConflictModal?.addEventListener('click', deps.closeConflictModal);
+    elements.btnConflictSkip?.addEventListener('click', () => deps.resolveConflict('skip'));
+    elements.btnConflictRename?.addEventListener('click', () => deps.resolveConflict('rename'));
+    elements.btnConflictEdit?.addEventListener('click', deps.openManualConflictEditor);
+    elements.btnConflictOverwrite?.addEventListener('click', () => deps.resolveConflict('overwrite'));
 
     // Export Modal
-    elements.btnCloseExportModal?.addEventListener('click', closeExportModal);
-    elements.btnExportCancel?.addEventListener('click', closeExportModal);
-    elements.btnExportGenerate?.addEventListener('click', handleExportGenerate);
+    elements.btnCloseExportModal?.addEventListener('click', deps.closeExportModal);
+    elements.btnExportCancel?.addEventListener('click', deps.closeExportModal);
+    elements.btnExportGenerate?.addEventListener('click', deps.handleExportGenerate);
 
     // SPEC-34: Extractor Workspace
-    elements.btnExtractorClose?.addEventListener('click', closeExtractorWorkspace);
-    elements.btnExtractorSelectProject?.addEventListener('click', handleExtractorSelectProject);
-    elements.btnExtractorSelectFiles?.addEventListener('click', handleExtractorSelectFiles);
-    elements.btnExtractorStart?.addEventListener('click', handleExtractorStartScan);
-    elements.btnExtractorAddAll?.addEventListener('click', handleExtractorAddAllToBuilder);
-    elements.btnExtractorApply?.addEventListener('click', handleExtractorApplyChanges);
-    elements.btnExtractorRollback?.addEventListener('click', handleExtractorRollback);
+    elements.btnExtractorClose?.addEventListener('click', deps.closeExtractorWorkspace);
+    elements.btnExtractorSelectProject?.addEventListener('click', deps.handleExtractorSelectProject);
+    elements.btnExtractorSelectFiles?.addEventListener('click', deps.handleExtractorSelectFiles);
+    elements.btnExtractorStart?.addEventListener('click', deps.handleExtractorStartScan);
+    elements.btnExtractorAddAll?.addEventListener('click', deps.handleExtractorAddAllToBuilder);
+    elements.btnExtractorApply?.addEventListener('click', deps.handleExtractorApplyChanges);
+    elements.btnExtractorRollback?.addEventListener('click', deps.handleExtractorRollback);
     
     // Keyboard shortcuts
-    document.addEventListener('keydown', handleKeyboardShortcuts);
+    document.addEventListener('keydown', (e) => handleKeyboardShortcuts(e));
     
     // Virtual scroll
-    elements.resultsViewport?.addEventListener('scroll', handleScroll);
+    elements.resultsViewport?.addEventListener('scroll', deps.handleScroll);
     
     // Window resize
-    window.addEventListener('resize', debounce(handleResize, 100));
+    window.addEventListener('resize', debounce(deps.handleResize, 100));
 
     // SPEC-42: Setup one-time listeners
-    setupModalFilterListeners();
-    setupSelectionListeners();
+    deps.setupModalFilterListeners();
+    deps.setupSelectionListeners();
   }
 
   function handleKeyboardShortcuts(e) {
@@ -310,7 +219,7 @@ export function createEventController(deps) {
     if (builderModalOpen && !builderSubModalOpen && !isInputFocused && e.key === 'Delete') {
       if (builderState.selectedLabelId !== null) {
         e.preventDefault();
-        removeBuilderItem(builderState.selectedLabelId);
+        deps.removeBuilderItem(builderState.selectedLabelId);
       }
       return;
     }
@@ -326,14 +235,14 @@ export function createEventController(deps) {
     // Alt+S to open advanced search
     if (e.altKey && e.key.toLowerCase() === 's') {
       e.preventDefault();
-      openAdvancedSearchModal();
+      deps.openAdvancedSearchModal();
       return;
     }
     
     // Alt+P to open system settings
     if (e.altKey && e.key.toLowerCase() === 'p') {
       e.preventDefault();
-      openSystemSettingsModal();
+      deps.openSystemSettingsModal();
       return;
     }
 
@@ -341,9 +250,9 @@ export function createEventController(deps) {
     if (e.altKey && e.key.toLowerCase() === 'b' && state.stage === 'READY') {
       e.preventDefault();
       if (!elements.builderModal?.classList.contains('hidden')) {
-        closeBuilderModal();
+        deps.closeBuilderModal();
       } else {
-        openBuilderModal();
+        deps.openBuilderModal();
       }
       return;
     }
@@ -351,88 +260,87 @@ export function createEventController(deps) {
     // SPEC-41: Alt+N to open New Label modal (within Builder)
     if (e.altKey && e.key.toLowerCase() === 'n' && state.stage === 'READY') {
       e.preventDefault();
-      // If Builder is closed, open it first then open New Label modal
       if (elements.builderModal?.classList.contains('hidden')) {
-        openBuilderModal();
+        deps.openBuilderModal();
       }
-      openNewLabelModal();
+      deps.openNewLabelModal();
       return;
     }
 
     // Alt+R to re-scan
     if (e.altKey && e.key.toLowerCase() === 'r' && state.stage === 'READY') {
       e.preventDefault();
-      handleRescan();
+      deps.handleRescan();
       return;
     }
 
     // Alt+I to open advanced stats
     if (e.altKey && e.key.toLowerCase() === 'i' && state.stage === 'READY') {
       e.preventDefault();
-      openStatsDashboardModal();
+      deps.openStatsDashboardModal();
       return;
     }
 
     // Alt+T to open tools menu
     if (e.altKey && e.key.toLowerCase() === 't' && state.stage === 'READY') {
       e.preventDefault();
-      openToolsModal();
+      deps.openToolsModal();
       return;
     }
 
     // Alt+E to select folder
     if (e.altKey && e.key.toLowerCase() === 'e' && state.stage === 'READY') {
       e.preventDefault();
-      handleChangeFolder();
+      deps.handleChangeFolder();
       return;
     }
     
     // Ctrl+Z to undo in Builder
     if (e.ctrlKey && e.key.toLowerCase() === 'z' && builderModalOpen && !builderSubModalOpen && !isInputFocused) {
       e.preventDefault();
-      undoBuilderChange();
+      deps.undoBuilderChange();
       return;
     }
 
     // Ctrl+Z to undo selection (only when in dashboard)
     if (e.ctrlKey && e.key.toLowerCase() === 'z' && state.stage === 'DASHBOARD') {
       e.preventDefault();
-      handleUndoSelection();
+      deps.handleUndoSelection();
       return;
     }
     
     // Escape to close modals
     if (e.key === 'Escape') {
       if (!elements.shortcutsModal?.classList.contains('hidden')) {
-        closeShortcutsModal();
+        deps.closeShortcutsModal();
       } else if (!elements.advancedSearchModal?.classList.contains('hidden')) {
-        closeAdvancedSearchModal();
+        deps.closeAdvancedSearchModal();
       } else if (!elements.systemSettingsModal?.classList.contains('hidden')) {
-        closeSystemSettingsModal();
+        deps.closeSystemSettingsModal();
       } else if (!elements.itemSelectorModal?.classList.contains('hidden')) {
-        closeItemSelectorModal();
+        deps.closeItemSelectorModal();
       } else if (!elements.labelDetailsModal?.classList.contains('hidden')) {
-        closeLabelDetailsModal();
+        deps.closeLabelDetailsModal();
       } else if (!elements.advancedSelectionModal?.classList.contains('hidden')) {
-        closeAdvancedSelectionModal();
+        deps.closeAdvancedSelectionModal();
       } else if (!elements.backgroundProgressModal?.classList.contains('hidden')) {
-        closeBackgroundProgressModal();
+        deps.closeBackgroundProgressModal();
       } else if (!elements.statsDashboardModal?.classList.contains('hidden')) {
-        closeStatsDashboardModal();
+        deps.closeStatsDashboardModal();
       } else if (!elements.mergerModal?.classList.contains('hidden')) {
-        closeMergerModal();
+        deps.closeMergerModal();
       } else if (!elements.toolsModal?.classList.contains('hidden')) {
-        closeToolsModal();
+        deps.closeToolsModal();
       } else if (!elements.conflictModal?.classList.contains('hidden')) {
-        closeConflictModal();
+        deps.closeConflictModal();
       } else if (!elements.newLabelModal?.classList.contains('hidden')) {
-        closeNewLabelModal();
+        deps.closeNewLabelModal();
       } else if (!elements.exportModal?.classList.contains('hidden')) {
-        closeExportModal();
+        deps.closeExportModal();
       } else if (!elements.builderModal?.classList.contains('hidden')) {
-        closeBuilderModal();
+        deps.closeBuilderModal();
       } else if (state.extractorOpen) {
-        closeExtractorWorkspace();
+        deps.closeExtractorWorkspace();
       }
       return;
     }
@@ -452,7 +360,7 @@ export function createEventController(deps) {
           state.keyboardNav.selectedIndex + 1, 
           resultsCount - 1
         );
-        updateKeyboardSelection();
+        deps.updateKeyboardSelection();
         return;
       }
 
@@ -460,7 +368,7 @@ export function createEventController(deps) {
       if (e.key === 'ArrowUp') {
         e.preventDefault();
         state.keyboardNav.selectedIndex = Math.max(state.keyboardNav.selectedIndex - 1, 0);
-        updateKeyboardSelection();
+        deps.updateKeyboardSelection();
         return;
       }
 
@@ -471,8 +379,8 @@ export function createEventController(deps) {
           ? state.groupedResults[state.keyboardNav.selectedIndex]
           : state.results[state.keyboardNav.selectedIndex];
         if (selectedItem) {
-          copyToClipboard(selectedItem.fullId || `@${selectedItem.prefix}:${selectedItem.labelId}`);
-          showSuccess(t('toast_copied_id'));
+          deps.copyToClipboard(selectedItem.fullId || `@${selectedItem.prefix}:${selectedItem.labelId}`);
+          deps.showSuccess(t('toast_copied_id'));
         }
         return;
       }
@@ -484,7 +392,7 @@ export function createEventController(deps) {
           ? state.groupedResults[state.keyboardNav.selectedIndex]
           : state.results[state.keyboardNav.selectedIndex];
         if (selectedItem && selectedItem.occurrences?.length > 1) {
-          showLabelDetailsModal(selectedItem);
+          deps.showLabelDetailsModal(selectedItem);
         }
         return;
       }
@@ -496,7 +404,7 @@ export function createEventController(deps) {
           ? state.groupedResults[state.keyboardNav.selectedIndex]
           : state.results[state.keyboardNav.selectedIndex];
         if (selectedItem) {
-          addLabelToBuilder(selectedItem);
+          deps.addLabelToBuilder(selectedItem);
         }
         return;
       }

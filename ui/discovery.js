@@ -19,6 +19,9 @@ export function createDiscoveryController({
   getState,
   t,
   showInfo,
+  showError,
+  showOnboarding,
+  hideSplash,
   getLanguageFlag,
   formatLanguageDisplay,
   buildPriorityLanguages,
@@ -29,10 +32,150 @@ export function createDiscoveryController({
   stopRealtimeStreaming,
   hideBackgroundProgressIndicator,
   renderBackgroundSummary,
+  showLiveIndexLine,
   hideLiveIndexLine,
-  progressController
+  updateLiveIndexLine,
+  progressController,
+  fileAccess,
+  db,
+  searchService,
+  showMainInterface,
+  emitIndexingCompleteSync,
+  renderFilterPills,
+  updateLabelCount,
+  updateLastIndexedDisplay,
+  scheduleStreamingSearchRefresh
 }) {
   const elements = createElementsProxy(getElements);
+
+  // Extract progress methods to fix ReferenceErrors
+  const {
+    showBackgroundProgressIndicator,
+    updateBackgroundProgress,
+    mergeBackgroundPairProgress,
+    queueCatalogProgressFlush,
+    flushCatalogProgressNow,
+    scheduleBackgroundProgressUIUpdate,
+    renderBackgroundLanguageList,
+    renderBackgroundSummary: renderBackgroundSummaryLocal
+  } = progressController;
+
+  /**
+   * Handle folder selection
+   */
+  async function handleSelectFolder() {
+    try {
+      setState('directoryHandle', await fileAccess.selectDirectory());
+      console.log('📁 Selected folder:', state.directoryHandle.name);
+      
+      // Save handle for future sessions
+      await db.saveDirectoryHandle(state.directoryHandle);
+      
+      // Start discovery
+      await startDiscovery();
+    } catch (err) {
+      if (err.message === 'USER_CANCELLED') {
+        showInfo(t('toast_select_folder') || 'Please select a folder to continue.');
+        return;
+      }
+      console.error('Folder selection error:', err);
+      showError(t('toast_folder_access_error') || 'Failed to access folder. Please try again.');
+    }
+  }
+
+  /**
+   * Handle folder change from main interface
+   */
+  async function handleChangeFolder() {
+    try {
+      // IMPORTANT: showDirectoryPicker MUST be the first async call to maintain user gesture context
+      const newHandle = await fileAccess.selectDirectory();
+
+      // Show feedback immediately after folder picker returns
+      elements.discoveryDashboard?.classList.add('hidden');
+      elements.app?.classList.add('hidden');
+      elements.onboardingOverlay?.classList.remove('hidden');
+      elements.btnSelectFolder?.classList.add('hidden');
+      elements.scanProgress?.classList.remove('hidden');
+      if (elements.scanStatus) {
+        elements.scanStatus.textContent = t('clearing_previous_index') || 'Clearing previous index...';
+      }
+      
+      // Only clear data AFTER successfully selecting a new folder
+      searchService.invalidateSearchCache();
+      await searchService.clearWarmStartCache();
+      await db.clearLabels();
+      await db.clearCatalog();
+      searchService.clearSearch();
+      await searchService.initSearch();
+      if (elements.scanStatus) {
+        elements.scanStatus.textContent = t('preparing_new_scan') || 'Preparing new scan...';
+      }
+      
+      // Save new handle
+      setState('directoryHandle', newHandle);
+      await db.saveDirectoryHandle(state.directoryHandle);
+      console.log('📁 Changed to folder:', state.directoryHandle.name);
+      
+      // Start discovery with new folder
+      await startDiscovery();
+    } catch (err) {
+      if (err.message === 'USER_CANCELLED') {
+        showInfo(t('toast_folder_change_cancelled') || 'Folder change cancelled. Keeping existing data.');
+        return;
+      }
+      console.error('Folder change error:', err);
+      showError(t('toast_folder_access_error') || 'Failed to access folder. Please try again.');
+    }
+  }
+
+  /**
+   * Start discovery scan
+   */
+  async function startDiscovery() {
+    setState('stage', 'DISCOVERING');
+    
+    // Ensure correct overlays are visible for scanning feedback
+    elements.discoveryDashboard?.classList.add('hidden');
+    elements.app?.classList.add('hidden');
+    elements.onboardingOverlay?.classList.remove('hidden');
+    
+    // Show progress
+    elements.btnSelectFolder?.classList.add('hidden');
+    elements.scanProgress?.classList.remove('hidden');
+    
+    try {
+      // Discover label files
+      setState('discoveryData', await fileAccess.discoverLabelFiles(
+        state.directoryHandle,
+        (progress) => {
+          if (elements.scanStatus) {
+            elements.scanStatus.textContent = t('scanning_status', { 
+              models: progress.foundModels, 
+              dirs: progress.scannedDirs 
+            }) || `Scanning... Found ${progress.foundModels} models (${progress.scannedDirs} directories scanned)`;
+          }
+        }
+      ));
+      
+      console.log('📊 Discovery complete:', state.discoveryData);
+      
+      if (state.discoveryData.length === 0) {
+        showError(t('error_no_labels') || 'No D365FO label files found. Make sure you selected the correct folder.');
+        elements.btnSelectFolder?.classList.remove('hidden');
+        elements.scanProgress?.classList.add('hidden');
+        return;
+      }
+      
+      // Show dashboard
+      showDiscoveryDashboard();
+    } catch (err) {
+      console.error('Discovery error:', err);
+      showError(t('error_scan_failed') || 'Failed to scan folder. Please try again.');
+      elements.btnSelectFolder?.classList.remove('hidden');
+      elements.scanProgress?.classList.add('hidden');
+    }
+  }
 
   function showDiscoveryDashboard() {
     setState('stage', 'DASHBOARD');
@@ -576,9 +719,681 @@ export function createDiscoveryController({
     }
   }
 
+  /**
+   * SPEC-23: Handle Quick Start - Index priority languages first, then background
+   */
+  async function handleQuickStart() {
+    const priorityLangs = state.backgroundIndexing.priorityLanguages;
+    const enableBackground = elements.chkBackgroundIndexing?.checked ?? true;
+    
+    // Collect files for priority languages
+    const priorityFiles = [];
+    const backgroundFiles = [];
+    
+    state.discoveryData.forEach(model => {
+      model.cultures.forEach(culture => {
+        const isPriority = priorityLangs.includes(culture.culture);
+        const files = culture.files.map(f => ({
+          handle: f.handle,
+          metadata: {
+            model: model.model,
+            culture: culture.culture,
+            prefix: f.prefix,
+            sourcePath: f.name
+          }
+        }));
+        
+        if (isPriority) {
+          priorityFiles.push(...files);
+        } else {
+          backgroundFiles.push(...files);
+        }
+      });
+    });
+    
+    if (priorityFiles.length === 0) {
+      showError(t('no_priority_languages_found') || 'No priority languages found in this folder');
+      return;
+    }
+
+    setState('stage', 'INDEXING');
+    state.indexingMode = 'priority';
+    closeAdvancedSelectionModal();
+    state.backgroundIndexing.completionSummary = null;
+    state.backgroundIndexing.languageStatus.clear();
+    
+    // Show progress
+    elements.btnQuickStart?.classList.add('hidden');
+    elements.btnStartIndexing?.classList.add('hidden');
+    elements.btnCancelRescan?.classList.add('hidden');
+    elements.btnChangeFolder?.classList.add('hidden');
+    elements.indexingProgress?.classList.remove('hidden');
+    
+    // Clear existing data
+    console.time('⏳ Database & Search Clear');
+    searchService.invalidateSearchCache();
+    await searchService.clearWarmStartCache();
+    await db.clearLabels();
+    await db.clearCatalog();
+    searchService.clearSearch();
+    await searchService.initSearch();
+    console.timeEnd('⏳ Database & Search Clear');
+    
+    // Initialize catalog with language status
+    const catalogEntries = [];
+    state.discoveryData.forEach((model) => {
+      model.cultures.forEach((cultureData) => {
+        const key = `${model.model}|||${cultureData.culture}`;
+        const fileCount = cultureData.files.length;
+        const isPriority = priorityLangs.includes(cultureData.culture);
+        const status = isPriority ? 'indexing' : 'waiting';
+        catalogEntries.push({
+          id: key,
+          model: model.model,
+          culture: cultureData.culture,
+          fileCount,
+          processedFiles: 0,
+          labelCount: 0,
+          totalProcessingMs: 0,
+          totalBytes: 0,
+          firstStartedAt: null,
+          lastEndedAt: null,
+          status,
+          isPriority
+        });
+
+        state.backgroundIndexing.languageStatus.set(key, {
+          key,
+          model: model.model,
+          culture: cultureData.culture,
+          fileCount,
+          processedFiles: 0,
+          labelCount: 0,
+          totalProcessingMs: 0,
+          totalBytes: 0,
+          firstStartedAt: null,
+          lastEndedAt: null,
+          status,
+          isPriority
+        });
+      });
+    });
+    await db.saveCatalog(catalogEntries);
+    
+    // SPEC-42: Set initial filters to priority languages
+    state.filters.cultures = [...priorityLangs];
+    renderFilterPills();
+
+    // Start indexing priority files
+    console.log(`🚀 SPEC-23 Quick Start: ${priorityFiles.length} priority files`);
+    state.backgroundIndexing.startTime = performance.now();
+    state.backgroundIndexing.baseLabelCount = 0;
+    state.backgroundIndexing.totalFiles = priorityFiles.length;
+    state.backgroundIndexing.processedFiles = 0;
+    state.backgroundIndexing.totalLabels = 0;
+    state.realtimeStreaming.enabled = true;
+    state.realtimeStreaming.streamedLabels = 0;
+    showLiveIndexLine();
+
+    const priorityPromise = indexFilesWithWorkers(priorityFiles, true, {
+      streamLabels: true,
+      streamLimit: state.realtimeStreaming.maxLabels
+    });
+
+    // Release UI
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    showMainInterface();
+
+    try {
+      await priorityPromise;
+      queueCatalogProgressFlush();
+      await flushCatalogProgressNow();
+
+      // Persist priority entries as ready
+      const priorityEntries = [...state.backgroundIndexing.languageStatus.values()].filter((entry) => entry.isPriority);
+      for (const entry of priorityEntries) {
+        entry.status = 'ready';
+        entry.processedFiles = entry.fileCount;
+        await db.updateCatalogStatus(entry.key, 'ready', entry.labelCount);
+      }
+
+      // Start background indexing if enabled
+      if (enableBackground && backgroundFiles.length > 0) {
+        console.log(`📦 SPEC-23 Background: ${backgroundFiles.length} files queued`);
+        state.indexingMode = 'background';
+        stopRealtimeStreaming();
+        state.backgroundIndexing.baseLabelCount = state.totalLabels;
+        state.backgroundIndexing.startTime = performance.now();
+        showBackgroundProgressIndicator();
+        startBackgroundIndexing(backgroundFiles);
+      } else {
+        state.indexingMode = 'idle';
+        stopRealtimeStreaming();
+        hideLiveIndexLine();
+        emitIndexingCompleteSync(state.totalLabels, Date.now());
+      }
+    } catch (err) {
+      console.error('Priority indexing error:', err);
+      state.indexingMode = 'idle';
+      stopRealtimeStreaming();
+      hideLiveIndexLine();
+      showError(t('toast_indexing_error') || 'Indexing failed');
+    }
+  }
+
+  /**
+   * SPEC-23: Index files with worker pool
+   */
+  async function indexFilesWithWorkers(fileTasks, isPriority = false, options = {}) {
+    const startTime = performance.now();
+    const totalFiles = fileTasks.length;
+    const streamLabels = Boolean(options.streamLabels);
+    
+    const workerCount = isPriority 
+      ? Math.min(navigator.hardwareConcurrency || 4, 4)
+      : 2;
+    
+    console.log(`🚀 ${isPriority ? 'PRIORITY' : 'BACKGROUND'} INDEXING: ${workerCount} workers for ${totalFiles} files`);
+    
+    const filesPerWorker = Math.ceil(totalFiles / workerCount);
+    const streamLimitPerWorker = streamLabels
+      ? Math.max(0, Math.floor((options.streamLimit || state.realtimeStreaming.maxLabels) / Math.max(1, workerCount)))
+      : 0;
+    const workers = [];
+    const workerPromises = [];
+    const workerStats = new Map();
+    
+    let totalLabels = 0;
+    let processedFiles = 0;
+    let errors = [];
+    
+    const updateProgress = () => {
+      const percent = totalFiles > 0 ? Math.round((processedFiles / totalFiles) * 100) : 0;
+      if (elements.progressFill) {
+        elements.progressFill.style.width = `${percent}%`;
+      }
+      if (elements.indexingStatus) {
+        elements.indexingStatus.textContent = `${isPriority ? '🚀' : '📦'} ${processedFiles}/${totalFiles} files • ${totalLabels.toLocaleString()} labels`;
+      }
+      
+      if (!isPriority && state.indexingMode === 'background') {
+        updateBackgroundProgress(processedFiles, totalFiles, totalLabels);
+      }
+      
+      if (isPriority) {
+        const priorityEntries = [...state.backgroundIndexing.languageStatus.values()].filter((entry) => entry.isPriority);
+        const priorityProcessed = priorityEntries.reduce((sum, entry) => sum + entry.processedFiles, 0);
+        const priorityTotal = priorityEntries.reduce((sum, entry) => sum + entry.fileCount, 0);
+        updateBackgroundProgress(priorityProcessed, priorityTotal || totalFiles, totalLabels);
+      }
+    };
+    
+    for (let i = 0; i < workerCount; i++) {
+      const startIdx = i * filesPerWorker;
+      const endIdx = Math.min(startIdx + filesPerWorker, totalFiles);
+      const workerFiles = fileTasks.slice(startIdx, endIdx);
+      
+      if (workerFiles.length === 0) continue;
+      
+      const worker = new Worker(
+        new URL('../workers/indexer.worker.js', import.meta.url)
+      );
+      workers.push(worker);
+      workerStats.set(i, { labels: 0, files: 0 });
+      
+      const workerPromise = new Promise((resolve, reject) => {
+        worker.onmessage = (e) => {
+          const { type } = e.data;
+          
+          switch (type) {
+            case 'STREAM_LABELS':
+              if (state.realtimeStreaming.enabled && Array.isArray(e.data.labels) && e.data.labels.length > 0) {
+                searchService.indexLabels(e.data.labels);
+                state.realtimeStreaming.streamedLabels += e.data.labels.length;
+                state.totalLabels = state.backgroundIndexing.baseLabelCount + state.realtimeStreaming.streamedLabels;
+                updateLabelCount();
+                scheduleStreamingSearchRefresh();
+              }
+              break;
+
+            case 'PROGRESS':
+              mergeBackgroundPairProgress(e.data.pairProgress, isPriority ? null : 'indexing');
+              queueCatalogProgressFlush();
+              workerStats.set(i, { 
+                labels: e.data.totalLabels, 
+                files: e.data.processedFiles 
+              });
+              totalLabels = 0;
+              processedFiles = 0;
+              for (const stats of workerStats.values()) {
+                totalLabels += stats.labels;
+                processedFiles += stats.files;
+              }
+              updateProgress();
+              break;
+
+            case 'DB_ERROR':
+              if (e.data?.isQuota) {
+                showError('Browser storage is full. Part of the indexed data was not saved.');
+              } else {
+                console.error('Worker DB error:', e.data?.error, `(${e.data?.labelsLost || 0} labels lost)`);
+              }
+              break;
+              
+            case 'PRIORITY_DONE':
+            case 'COMPLETE':
+              mergeBackgroundPairProgress(
+                e.data.pairProgress,
+                type === 'PRIORITY_DONE' ? 'ready' : (isPriority ? 'ready' : null)
+              );
+              queueCatalogProgressFlush();
+              workerStats.set(i, { 
+                labels: e.data.totalLabels, 
+                files: e.data.processedFiles 
+              });
+              if (e.data.errors?.length > 0) {
+                errors.push(...e.data.errors);
+              }
+              worker.terminate();
+              resolve({
+                labels: e.data.totalLabels,
+                files: e.data.processedFiles
+              });
+              break;
+          }
+        };
+        
+        worker.onerror = (e) => {
+          console.error('Worker error:', e);
+          worker.terminate();
+          reject(e);
+        };
+        
+        worker.postMessage({
+          type: 'PROCESS_FILES_HANDLES',
+          files: workerFiles,
+          isPriority,
+          streamLabels,
+          streamLimit: streamLimitPerWorker,
+          dbName: db.DB_NAME,
+          dbVersion: db.DB_VERSION
+        });
+      });
+      
+      workerPromises.push(workerPromise);
+    }
+    
+    try {
+      await Promise.all(workerPromises);
+      totalLabels = 0;
+      processedFiles = 0;
+      for (const stats of workerStats.values()) {
+        totalLabels += stats.labels;
+        processedFiles += stats.files;
+      }
+    } catch (err) {
+      console.error('Indexing error:', err);
+      showError(t('toast_indexing_error') || 'Indexing failed');
+      workers.forEach(w => { try { w.terminate(); } catch (e) {} });
+      return { totalLabels: 0, processedFiles: 0, errors };
+    }
+    
+    const elapsed = (performance.now() - startTime) / 1000;
+    console.log(`✅ ${isPriority ? 'PRIORITY' : 'BACKGROUND'} complete: ${totalLabels} labels in ${elapsed.toFixed(1)}s`);
+
+    await flushCatalogProgressNow();
+    await db.setMetadata('lastIndexed', Date.now());
+    state.totalLabels = await db.getLabelCount();
+    searchService.setIDBTotalCount(state.totalLabels);
+    
+    return { totalLabels, processedFiles, errors };
+  }
+
+  /**
+   * Handle start indexing - TURBO INGESTION (SPEC-16)
+   */
+  async function handleStartIndexing() {
+    setState('stage', 'INDEXING');
+    closeAdvancedSelectionModal();
+    
+    // Show progress
+    elements.btnStartIndexing?.classList.add('hidden');
+    elements.btnCancelRescan?.classList.add('hidden');
+    elements.btnChangeFolder?.classList.add('hidden');
+    elements.indexingProgress?.classList.remove('hidden');
+    
+    // Clear existing data
+    console.time('⏳ Database & Search Clear');
+    searchService.invalidateSearchCache();
+    await searchService.clearWarmStartCache();
+    await db.clearLabels();
+    searchService.clearSearch();
+    await searchService.initSearch();
+    console.timeEnd('⏳ Database & Search Clear');
+    
+    const { selectedData, totalFiles } = getSelectedDiscoveryData();
+    
+    if (totalFiles === 0) {
+      showError(t('toast_no_files_selected'));
+      elements.btnStartIndexing?.classList.remove('hidden');
+      elements.btnChangeFolder?.classList.remove('hidden');
+      elements.indexingProgress?.classList.add('hidden');
+      return;
+    }
+    
+    const startTime = performance.now();
+    let processedFiles = 0;
+    let totalLabels = 0;
+    let errors = [];
+    
+    const workerCount = Math.min(navigator.hardwareConcurrency || 4, 6);
+    console.log(`🚀 SPEC-18 TURBO INGESTION: ${workerCount} workers for ${totalFiles} files`);
+    
+    function updateProgress() {
+      const progress = Math.round((processedFiles / totalFiles) * 100);
+      const elapsed = (performance.now() - startTime) / 1000;
+      const labelsPerSec = elapsed > 0 ? Math.round(totalLabels / elapsed) : 0;
+      
+      elements.progressFill.style.width = `${progress}%`;
+      elements.indexingStatus.innerHTML = `
+        Indexing... ${processedFiles}/${totalFiles} files | ${totalLabels.toLocaleString()} labels
+        <br><small style="color: var(--text-dark)">${labelsPerSec.toLocaleString()} labels/sec</small>
+      `;
+    }
+    
+    const fileTasks = [];
+    for (const model of selectedData) {
+      for (const culture of model.cultures) {
+        for (const file of culture.files) {
+          fileTasks.push({
+            handle: file.handle,
+            metadata: {
+              model: model.model,
+              culture: culture.culture,
+              prefix: file.prefix,
+              sourcePath: `${model.model}/${culture.culture}/${file.name}`
+            }
+          });
+        }
+      }
+    }
+    
+    const workers = [];
+    for (let i = 0; i < workerCount; i++) {
+      const worker = new Worker(
+        new URL('../workers/indexer.worker.js', import.meta.url)
+      );
+      workers.push(worker);
+    }
+    
+    const filesPerWorker = Math.ceil(fileTasks.length / workerCount);
+    const workerPromises = [];
+    const workerStats = new Map();
+    
+    for (let i = 0; i < workerCount; i++) {
+      const workerFiles = fileTasks.slice(i * filesPerWorker, (i + 1) * filesPerWorker);
+      if (workerFiles.length === 0) continue;
+      
+      const worker = workers[i];
+      const workerId = i;
+      workerStats.set(workerId, { labels: 0, files: 0 });
+      
+      const workerPromise = new Promise((resolve, reject) => {
+        worker.onmessage = (e) => {
+          const { type } = e.data;
+          switch (type) {
+            case 'PROGRESS':
+            case 'FILE_COMPLETE':
+              workerStats.set(workerId, { labels: e.data.totalLabels, files: e.data.processedFiles });
+              totalLabels = 0;
+              processedFiles = 0;
+              for (const stats of workerStats.values()) {
+                totalLabels += stats.labels;
+                processedFiles += stats.files;
+              }
+              updateProgress();
+              break;
+            case 'DB_ERROR':
+              if (e.data?.isQuota) showError('Browser storage is full.');
+              break;
+            case 'COMPLETE':
+              workerStats.set(workerId, { labels: e.data.totalLabels, files: e.data.processedFiles });
+              if (e.data.errors?.length > 0) errors.push(...e.data.errors);
+              worker.terminate();
+              resolve();
+              break;
+          }
+        };
+        worker.onerror = (e) => { worker.terminate(); reject(e); };
+        worker.postMessage({
+          type: 'PROCESS_FILES_HANDLES',
+          files: workerFiles,
+          dbName: db.DB_NAME,
+          dbVersion: db.DB_VERSION
+        });
+      });
+      workerPromises.push(workerPromise);
+    }
+    
+    try {
+      await Promise.all(workerPromises);
+    } catch (err) {
+      console.error('Indexing error:', err);
+      showError(t('toast_indexing_error') || 'Indexing failed');
+      workers.forEach(w => { try { w.terminate(); } catch (e) {} });
+      return;
+    }
+    
+    const indexedAt = Date.now();
+    await db.setMetadata('lastIndexed', indexedAt);
+    await db.setMetadata('totalLabels', totalLabels);
+    
+    await searchService.preloadPriorityLanguages(state.backgroundIndexing.priorityLanguages);
+    
+    state.totalLabels = totalLabels;
+    searchService.setIDBTotalCount(totalLabels);
+    setState('previousStage', null);
+    
+    await showMainInterface(indexedAt);
+    searchService.invalidateSearchCache();
+    emitIndexingCompleteSync(totalLabels, indexedAt);
+    
+    if (errors.length > 0) {
+      showInfo(t('toast_indexing_skipped', { count: errors.length }));
+    } else {
+      showSuccess(t('toast_indexing_complete', { count: totalLabels }));
+    }
+  }
+
+  /**
+   * Build search index using streaming from IndexedDB
+   */
+  async function buildSearchIndexStreaming(onProgress = null) {
+    const CHUNK_SIZE = 10000;
+    const dbInstance = await db.initDB();
+
+    return new Promise((resolve, reject) => {
+      const tx = dbInstance.transaction('labels', 'readonly');
+      const store = tx.objectStore('labels');
+      const request = store.openCursor();
+      let chunk = [];
+      let totalIndexed = 0;
+
+      request.onsuccess = (event) => {
+        const cursor = event.target.result;
+        if (!cursor) {
+          if (chunk.length > 0) {
+            searchService.indexAll(chunk);
+            totalIndexed += chunk.length;
+          }
+          if (onProgress) onProgress(totalIndexed);
+          resolve(totalIndexed);
+          return;
+        }
+
+        chunk.push(cursor.value);
+        if (chunk.length >= CHUNK_SIZE) {
+          searchService.indexAll(chunk);
+          totalIndexed += chunk.length;
+          chunk = [];
+          if (onProgress) onProgress(totalIndexed);
+        }
+        cursor.continue();
+      };
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  /**
+   * Handle rescan
+   */
+  async function handleRescan() {
+    const wasReady = state.stage === 'READY';
+    setState('previousStage', getState('stage'));
+    
+    const savedHandle = await db.getSavedDirectoryHandle();
+    if (savedHandle) {
+      const hasPermission = await fileAccess.requestPermission(savedHandle);
+      if (hasPermission) {
+        setState('directoryHandle', savedHandle);
+        if (wasReady) {
+          await startSilentRescan();
+        } else {
+          await startDiscovery();
+        }
+        return;
+      }
+    }
+    showInfo(t('toast_select_folder'));
+    showOnboarding();
+  }
+
+  /**
+   * BUG-24: Generic parallel indexing with worker pool
+   */
+  async function startParallelIndexing(files, isPriority = false) {
+    if (files.length === 0) return { totalLabels: 0, processedFiles: 0 };
+    
+    const fileTasks = files.map(f => ({
+      handle: f.file.handle,
+      metadata: {
+        model: f.model,
+        culture: f.culture,
+        prefix: f.file.prefix,
+        sourcePath: `${f.model}/${f.culture}/${f.file.name}`
+      }
+    }));
+
+    const result = await indexFilesWithWorkers(fileTasks, isPriority);
+    
+    const entryKeys = new Set(fileTasks.map(f => `${f.metadata.model}|||${f.metadata.culture}`));
+    for (const key of entryKeys) {
+      const entry = state.backgroundIndexing.languageStatus.get(key);
+      if (entry) {
+        entry.status = 'ready';
+        entry.processedFiles = entry.fileCount;
+        await db.updateCatalogStatus(key, 'ready', entry.labelCount);
+      }
+    }
+    
+    state.totalLabels = await db.getLabelCount();
+    searchService.setIDBTotalCount(state.totalLabels);
+    searchService.invalidateSearchCache();
+    updateLabelCount();
+    const now = Date.now();
+    await db.setMetadata('lastIndexed', now);
+    updateLastIndexedDisplay(now);
+    emitIndexingCompleteSync(state.totalLabels, now);
+    
+    if (!isPriority) {
+      renderBackgroundSummary();
+      renderBackgroundLanguageList();
+    }
+    
+    return result;
+  }
+
+  /**
+   * BUG-24: Silent Re-scan
+   */
+  async function startSilentRescan() {
+    showInfo(t('toast_rescan_background') || 'Re-scanning folder in background...');
+    setState('stage', 'READY');
+    
+    try {
+      const newDiscoveryData = await fileAccess.discoverLabelFiles(state.directoryHandle, () => {});
+      if (newDiscoveryData.length === 0) {
+        showError(t('error_no_labels'));
+        return;
+      }
+      
+      setState('discoveryData', newDiscoveryData);
+      
+      const currentCultures = await searchService.getIndexedCultures();
+      const priorityCultures = currentCultures.length > 0 ? currentCultures : ['en-US', 'pt-BR'];
+      
+      state.filters.cultures = [...priorityCultures];
+      renderFilterPills();
+      
+      const priorityFiles = [];
+      const backgroundFiles = [];
+      for (const model of newDiscoveryData) {
+        for (const culture of model.cultures) {
+          const fileList = isPriority ? priorityFiles : backgroundFiles; // logical error in my thought, fixing:
+          const isPriority = priorityCultures.includes(culture.culture);
+          for (const file of culture.files) {
+            (isPriority ? priorityFiles : backgroundFiles).push({ model: model.model, culture: culture.culture, file });
+          }
+        }
+      }
+      
+      if (priorityFiles.length > 0) {
+        searchService.invalidateSearchCache();
+        await searchService.clearWarmStartCache();
+        await db.clearLabels();
+        await searchService.clearSearch();
+        await searchService.initSearch();
+        
+        state.indexingMode = 'background';
+        state.backgroundIndexing.baseLabelCount = 0;
+        state.backgroundIndexing.totalFiles = priorityFiles.length + backgroundFiles.length;
+        state.backgroundIndexing.processedFiles = 0;
+        state.backgroundIndexing.totalLabels = 0;
+        state.backgroundIndexing.startTime = performance.now();
+        showBackgroundProgressIndicator();
+        
+        await startParallelIndexing(priorityFiles, true);      
+        showSuccess(t('toast_rescan_complete') || 'Re-scan complete');
+
+        if (backgroundFiles.length > 0) {
+          setTimeout(async () => {
+            if (state.indexingMode !== 'background') {
+              state.indexingMode = 'background';
+              showBackgroundProgressIndicator();
+            }
+            await startParallelIndexing(backgroundFiles, false);
+            state.indexingMode = 'idle';
+            hideBackgroundProgressIndicator();
+            await searchService.refreshGlobalBloomFilter();
+          }, 100);
+        } else {
+          state.indexingMode = 'idle';
+          hideBackgroundProgressIndicator();
+          await searchService.refreshGlobalBloomFilter();
+        }
+      }
+    } catch (err) {
+      console.error('Silent re-scan error:', err);
+      showError(t('error_rescan_failed') || 'Re-scan failed');
+    }
+  }
+
+  /**
+   * Handle Undo Selection (Ctrl+Z)
+   */
   function handleUndoSelection() {
     if (state.selectionHistory.length === 0) {
-      showInfo(t('toast_nothing_to_undo'));
+      showInfo(t('toast_nothing_to_undo') || 'Nothing to undo');
       return;
     }
     
@@ -587,10 +1402,74 @@ export function createDiscoveryController({
     
     renderModelsListWithSelection();
     updateSelectionInfo();
-    showInfo(t('toast_selection_restored'));
+    showInfo(t('toast_selection_restored') || 'Selection restored');
+  }
+
+  /**
+   * Start background indexing for non-priority languages
+   */
+  async function startBackgroundIndexing(backgroundFiles) {
+    if (backgroundFiles.length === 0) {
+      state.indexingMode = 'idle';
+      hideBackgroundProgressIndicator();
+      return;
+    }
+    showLiveIndexLine();
+    
+    state.backgroundIndexing.totalFiles = backgroundFiles.length;
+    state.backgroundIndexing.processedFiles = 0;
+    state.backgroundIndexing.totalLabels = 0;
+    
+    const scheduleWork = window.requestIdleCallback || ((cb) => setTimeout(cb, 100));
+    
+    scheduleWork(async () => {
+      try {
+        const entryKeys = new Set(backgroundFiles.map(f => `${f.metadata.model}|||${f.metadata.culture}`));
+        for (const key of entryKeys) {
+          const entry = state.backgroundIndexing.languageStatus.get(key);
+          if (entry && entry.status !== 'ready') entry.status = 'indexing';
+        }
+        scheduleBackgroundProgressUIUpdate();
+
+        const result = await indexFilesWithWorkers(backgroundFiles, false);
+        const finalLabelCount = await db.getLabelCount();
+        searchService.setIDBTotalCount(finalLabelCount);
+        
+        for (const key of entryKeys) {
+          const status = state.backgroundIndexing.languageStatus.get(key);
+          if (status) { status.status = 'ready'; status.processedFiles = status.fileCount; }
+        }
+
+        queueCatalogProgressFlush();
+        await flushCatalogProgressNow();
+        
+        state.indexingMode = 'idle';
+        hideBackgroundProgressIndicator();
+        await searchService.refreshGlobalBloomFilter();
+        
+        state.totalLabels = finalLabelCount;
+        searchService.invalidateSearchCache();
+        updateLabelCount();
+        const completedAt = Date.now();
+        await db.setMetadata('lastIndexed', completedAt);
+        updateLastIndexedDisplay(completedAt);
+        emitIndexingCompleteSync(finalLabelCount, completedAt);
+        renderBackgroundSummary();
+        renderBackgroundLanguageList();
+        
+        showSuccess(t('background_indexing_complete'));
+      } catch (err) {
+        console.error('Background indexing error:', err);
+        state.indexingMode = 'idle';
+        hideBackgroundProgressIndicator();
+      }
+    });
   }
 
   return {
+    handleSelectFolder,
+    handleChangeFolder,
+    startDiscovery,
     showDiscoveryDashboard,
     renderPriorityLanguageChips,
     openAdvancedSelectionModal,
@@ -613,6 +1492,10 @@ export function createDiscoveryController({
     handleToggleSelection,
     handleCancelRescan,
     saveSelectionHistory,
-    handleUndoSelection
+    handleUndoSelection,
+    handleQuickStart,
+    handleStartIndexing,
+    handleRescan,
+    buildSearchIndexStreaming
   };
 }

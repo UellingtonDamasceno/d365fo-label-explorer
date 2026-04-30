@@ -7,9 +7,9 @@
  */
 
 import { FLAGS } from '../utils/flags.js';
+import { DB_NAME, DB_VERSION } from './db-constants.js';
 
-export const DB_NAME = 'd365fo-labels';
-export const DB_VERSION = 10; // Added multi-entry 'tokens' index for native inverted index
+export { DB_NAME, DB_VERSION };
 
 const STORES = {
   LABELS: 'labels',

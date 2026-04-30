@@ -217,7 +217,6 @@ export const translations = {
     labels_indexed: 'Labels Indexed',
     overall_progress: 'Overall Progress',
     estimated_time: 'Est. Remaining',
-    labels_indexed: 'Labels Indexed',
     processing_speed: 'Processing Speed',
     language_status: 'Language Status',
     model_column: 'Model',
@@ -290,6 +289,7 @@ export const translations = {
     extractor_apply_complete: 'Refactoring complete!',
     extractor_apply_success: 'Refactored {count} strings across {files} files.',
     extractor_apply_error: 'Failed to apply changes.',
+    extractor_apply_partial_error: 'Failed to write {count} file(s). Related candidates were kept for retry.',
     extractor_no_model: 'Select a project (.rnrproj) first.',
     extractor_rollback_confirm: 'Rollback to backup from {date}? This will restore {count} file(s).',
     extractor_rolling_back: 'Restoring files...',
@@ -381,6 +381,7 @@ export const translations = {
     export_error: 'Export failed',
     export_started_background: 'Export started. Processing in background...',
     export_success_background: 'Export complete: {name}',
+    export_failed_restore_history: 'Export failed. Your labels were saved in History and can be restored from the Builder History tab.',
     
     // New Label Modal
     new_label_title: 'Create New Label',
@@ -645,7 +646,6 @@ export const translations = {
     labels_indexed: 'Labels Indexados',
     overall_progress: 'Progresso Total',
     estimated_time: 'Tempo Restante',
-    labels_indexed: 'Labels Indexados',
     processing_speed: 'Velocidade',
     language_status: 'Status por Idioma',
     model_column: 'Modelo',
@@ -718,6 +718,7 @@ export const translations = {
     extractor_apply_complete: 'Refatoração concluída!',
     extractor_apply_success: 'Refatoradas {count} strings em {files} arquivos.',
     extractor_apply_error: 'Falha ao aplicar alterações.',
+    extractor_apply_partial_error: 'Falha ao gravar {count} arquivo(s). Candidatos relacionados foram mantidos para nova tentativa.',
     extractor_no_model: 'Selecione primeiro um projeto (.rnrproj).',
     extractor_rollback_confirm: 'Reverter para o backup de {date}? Isso restaurará {count} arquivo(s).',
     extractor_rolling_back: 'Restaurando arquivos...',
@@ -808,6 +809,7 @@ export const translations = {
     export_error: 'Falha na exportação',
     export_started_background: 'Exportação iniciada. Processando em segundo plano...',
     export_success_background: 'Exportação concluída: {name}',
+    export_failed_restore_history: 'A exportação falhou. Seus labels foram salvos no Histórico e podem ser restaurados na aba Histórico do Builder.',
     
     // New Label Modal
     new_label_title: 'Criar Novo Label',

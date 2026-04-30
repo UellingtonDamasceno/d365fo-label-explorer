@@ -22,6 +22,7 @@ export function createBuilderController({
   });
 
   let managedTranslatorWorker = null;
+  const MAX_BACKGROUND_TASK_HISTORY = 10;
 
   function applyBuilderDirectSaveVisualState() {
     const modalContent = elements.builderModal?.querySelector('.builder-content');
@@ -1045,7 +1046,19 @@ export function createBuilderController({
       task.status = 'error';
       task.message = err?.message || 'Export failed';
       updateBackgroundTasksHeader();
+      showError(
+        t('export_failed_restore_history') ||
+        'Export failed. Your labels were kept in History and can be restored from the Builder History tab.'
+      );
     }
+  }
+
+  function pruneBackgroundTasks() {
+    const activeTasks = state.backgroundTasks.filter((task) => task.status === 'processing');
+    const completedTasks = state.backgroundTasks
+      .filter((task) => task.status !== 'processing')
+      .slice(-MAX_BACKGROUND_TASK_HISTORY);
+    state.backgroundTasks = [...activeTasks, ...completedTasks];
   }
 
   /**
@@ -1053,6 +1066,7 @@ export function createBuilderController({
    */
   function updateBackgroundTasksHeader() {
     if (!elements.btnBackgroundTasks || !elements.backgroundTasksText) return;
+    pruneBackgroundTasks();
 
     const activeTasks = state.backgroundTasks.filter(t => t.status === 'processing');
     elements.btnBackgroundTasks.classList.toggle('hidden', state.backgroundTasks.length === 0);

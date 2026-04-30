@@ -7,14 +7,35 @@ let modelPipeline = null;
 let downloadInProgress = false;
 
 async function clearLikelyAiCaches() {
-  if (!('caches' in self)) return;
+  if ('caches' in self) {
+    const keys = await caches.keys();
+    const candidates = keys.filter((key) =>
+      /transformers|huggingface|xenova|onnx|model/i.test(key)
+    );
+    await Promise.all(candidates.map((key) => caches.delete(key)));
+  }
 
-  const keys = await caches.keys();
-  const candidates = keys.filter((key) =>
-    /transformers|huggingface|xenova|onnx|model/i.test(key)
-  );
+  if (
+    'indexedDB' in self &&
+    self.indexedDB &&
+    typeof self.indexedDB.databases === 'function'
+  ) {
+    try {
+      const dbs = await self.indexedDB.databases();
+      const aiDbs = (dbs || []).filter((dbInfo) =>
+        /transformers|huggingface|xenova|onnx|hf[\-_]/i.test(dbInfo?.name || '')
+      );
 
-  await Promise.all(candidates.map((key) => caches.delete(key)));
+      await Promise.all(aiDbs.map((dbInfo) => new Promise((resolve) => {
+        const req = self.indexedDB.deleteDatabase(dbInfo.name);
+        req.onsuccess = () => resolve();
+        req.onerror = () => resolve();
+        req.onblocked = () => resolve();
+      })));
+    } catch (err) {
+      console.warn('[AI] Could not clear IndexedDB caches:', err?.message || err);
+    }
+  }
 }
 
 async function downloadModel() {
