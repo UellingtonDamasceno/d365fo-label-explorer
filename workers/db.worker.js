@@ -4,7 +4,7 @@
  * Required because OPFS requires Atomics.wait() which is forbidden on the main thread.
  */
 
-import sqlite3InitModule from 'https://cdn.jsdelivr.net/npm/@sqlite.org/sqlite-wasm@3.45.1-build1/sqlite-wasm/jswasm/sqlite3.mjs';
+import sqlite3InitModule from '../libs/sqlite/sqlite3.mjs';
 
 const DB_NAME = 'd365fo-labels';
 let sqlite3 = null;
@@ -19,7 +19,8 @@ async function initSQLite() {
     try {
         sqlite3 = await sqlite3InitModule({
             print: console.log,
-            printErr: console.error
+            printErr: console.error,
+            locateFile: (file) => `../libs/sqlite/${file}`
         });
 
         if (sqlite3.oo1.OpfsDb) {
