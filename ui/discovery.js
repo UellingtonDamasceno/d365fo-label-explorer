@@ -1,3 +1,5 @@
+import { DB_NAME, DB_VERSION } from '../core/db-constants.js';
+
 function createElementsProxy(getElements) {
   return new Proxy({}, {
     get(_target, prop) {
@@ -1262,8 +1264,8 @@ export function createDiscoveryController({
           isPriority,
           streamLabels,
           streamLimit: streamLimitPerWorker,
-          dbName: db.DB_NAME,
-          dbVersion: db.DB_VERSION
+          dbName: DB_NAME,
+          dbVersion: DB_VERSION
         });
       });
       
@@ -1431,8 +1433,8 @@ export function createDiscoveryController({
         worker.postMessage({
           type: 'PROCESS_FILES_HANDLES',
           files: workerFiles,
-          dbName: db.DB_NAME,
-          dbVersion: db.DB_VERSION
+          dbName: DB_NAME,
+          dbVersion: DB_VERSION
         });
       });
       workerPromises.push(workerPromise);
