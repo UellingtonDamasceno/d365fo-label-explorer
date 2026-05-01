@@ -27,7 +27,8 @@ function saveBatchRequest(labels) {
  * SPEC-42: Request main thread to save bloom filter
  */
 function saveBloomFilterRequest(model, culture, buffer) {
-  self.postMessage({ type: 'REQUEST_BLOOM_SAVE', model, culture, buffer }, [buffer]);
+  // buffer is a Uint8Array, we must transfer its underlying ArrayBuffer
+  self.postMessage({ type: 'REQUEST_BLOOM_SAVE', model, culture, buffer }, [buffer.buffer]);
 }
 
 function normalizeLabelForSearch(label) {
