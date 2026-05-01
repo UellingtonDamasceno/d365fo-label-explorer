@@ -258,8 +258,31 @@ function initSearchWorker() {
   try {
     searchWorker = new Worker('./workers/search.worker.js', { type: 'module' });
     
-    searchWorker.onmessage = (e) => {
-      const { type, id, result, duration, error, scanned } = e.data;
+    searchWorker.onmessage = async (e) => {
+      const { type, id, result, duration, error, scanned, payload } = e.data;
+      
+      // SPEC-11: Handle DB requests from the search worker
+      if (type === 'DB_REQUEST') {
+          try {
+              const { requestType, payload: requestPayload } = e.data;
+              let dbResult;
+              
+              if (requestType === 'getBloomFilter') {
+                  dbResult = await db.getBloomFilter(requestPayload.model, requestPayload.culture);
+              } else if (requestType === 'searchFTS') {
+                  dbResult = await db.searchFTS(requestPayload.query, requestPayload.limit, requestPayload.offset);
+              } else if (requestType === 'getLabels') {
+                  dbResult = await db.getLabels(requestPayload.filters);
+              } else {
+                  dbResult = await db[requestType]();
+              }
+              
+              searchWorker.postMessage({ type: 'DB_RESPONSE', id, payload: dbResult });
+          } catch (err) {
+              searchWorker.postMessage({ type: 'DB_RESPONSE', id, error: err.message });
+          }
+          return;
+      }
       
       if (type === 'PROGRESS') {
         console.log(`[Search Worker] Scanned ${scanned} items...`);
