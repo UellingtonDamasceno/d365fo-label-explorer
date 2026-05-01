@@ -9,7 +9,8 @@ import sqlite3InitModule from '../libs/sqlite/sqlite3.mjs';
 // SPEC-11: Resolve paths relative to the worker location
 const BASE_URL = new URL('../libs/sqlite/', import.meta.url).href;
 globalThis.sqlite3InitModuleState = {
-    sqlite3Dir: BASE_URL
+    sqlite3Dir: BASE_URL,
+    debugModule: () => {} // Required by the library to avoid TypeError
 };
 
 const DB_NAME = 'd365fo-labels';
