@@ -206,6 +206,22 @@ export async function getBuilderSessions() {
     return res.payload.sort((a,b) => b.updatedAt - a.updatedAt);
 }
 
+// Bloom Filters
+export async function saveBloomFilter(model, culture, buffer) {
+    const key = `${model}|||${culture}`;
+    return await dbWorker.send('KV_PUT', { store: 'bloom_filters', key, value: { buffer: Array.from(new Uint8Array(buffer)) } });
+}
+
+export async function getBloomFilter(model, culture) {
+    const key = `${model}|||${culture}`;
+    const res = await dbWorker.send('KV_GET', { store: 'bloom_filters', key });
+    const data = res.payload;
+    if (data && data.buffer) {
+        return { buffer: new Uint8Array(data.buffer).buffer };
+    }
+    return null;
+}
+
 export async function hasData() {
     const count = await getLabelCount();
     return count > 0;

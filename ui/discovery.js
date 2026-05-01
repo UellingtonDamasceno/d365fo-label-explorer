@@ -1195,6 +1195,14 @@ export function createDiscoveryController({
           const { type } = e.data;
           
           switch (type) {
+            case 'REQUEST_DB_WRITE':
+              db.addLabels(e.data.labels);
+              break;
+
+            case 'REQUEST_BLOOM_SAVE':
+              db.saveBloomFilter(e.data.model, e.data.culture, e.data.buffer);
+              break;
+
             case 'STREAM_LABELS':
               if (state.realtimeStreaming.enabled && Array.isArray(e.data.labels) && e.data.labels.length > 0) {
                 searchService.indexLabels(e.data.labels);
@@ -1407,6 +1415,12 @@ export function createDiscoveryController({
         worker.onmessage = (e) => {
           const { type } = e.data;
           switch (type) {
+            case 'REQUEST_DB_WRITE':
+              db.addLabels(e.data.labels);
+              break;
+            case 'REQUEST_BLOOM_SAVE':
+              db.saveBloomFilter(e.data.model, e.data.culture, e.data.buffer);
+              break;
             case 'PROGRESS':
             case 'FILE_COMPLETE':
               workerStats.set(workerId, { labels: e.data.totalLabels, files: e.data.processedFiles });
