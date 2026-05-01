@@ -7,9 +7,9 @@
 import sqlite3InitModule from '../libs/sqlite/sqlite3.mjs';
 
 // SPEC-11: Force sqlite3 to load its internal OPFS proxy from the local path.
-// The library uses this global state to resolve relative URIs for auxiliary workers.
+const sqlite3Dir = new URL('../libs/sqlite/', import.meta.url).href;
 globalThis.sqlite3InitModuleState = {
-    sqlite3Dir: '../libs/sqlite/'
+    sqlite3Dir: sqlite3Dir
 };
 
 const DB_NAME = 'd365fo-labels';
@@ -26,7 +26,7 @@ async function initSQLite() {
         sqlite3 = await sqlite3InitModule({
             print: console.log,
             printErr: console.error,
-            locateFile: (file) => `../libs/sqlite/${file}`
+            locateFile: (file) => new URL(`../libs/sqlite/${file}`, import.meta.url).href
         });
 
         if (sqlite3.oo1.OpfsDb) {
