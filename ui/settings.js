@@ -227,7 +227,10 @@ export function createSettingsController({
   function ensureAiWorker() {
     if (state.ai.worker) return state.ai.worker;
 
-    state.ai.worker = new Worker('./workers/ai-model.worker.js', { type: 'module' });
+    state.ai.worker = new Worker(
+      new URL('../workers/ai-model.worker.js', import.meta.url),
+      { type: 'module' }
+    );
     state.ai.worker.onmessage = async (event) => {
       const { type, payload } = event.data || {};
       if (type === 'PROGRESS') {

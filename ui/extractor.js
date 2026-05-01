@@ -263,7 +263,10 @@ export function createExtractorController(deps) {
     }
 
     return new Promise((resolve) => {
-      const worker = new Worker('./workers/translator.worker.js', { type: 'module' });
+      const worker = new Worker(
+        new URL('../workers/translator.worker.js', import.meta.url),
+        { type: 'module' }
+      );
       let finished = false;
 
       function cleanup(result) {
@@ -568,7 +571,9 @@ export function createExtractorController(deps) {
   function ensureExtractorWorker() {
     if (extractorState.worker) return extractorState.worker;
 
-    extractorState.worker = new Worker('./workers/extractor.worker.js');
+    extractorState.worker = new Worker(
+      new URL('../workers/extractor.worker.js', import.meta.url)
+    );
     extractorState.worker.onmessage = async (event) => {
       const { type, payload } = event.data || {};
 

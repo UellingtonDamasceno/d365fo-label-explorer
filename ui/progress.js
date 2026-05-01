@@ -148,11 +148,34 @@ export function createBackgroundProgressController({
     return (async () => {
       const updates = [...catalogPendingUpdates.entries()];
       catalogPendingUpdates.clear();
-      for (const [key, update] of updates) {
+      const payload = updates.map(([key, update]) => ({
+        id: key,
+        processedFiles: update.processedFiles,
+        labelCount: update.labelCount,
+        metrics: update.metrics || null
+      }));
+
+      if (payload.length === 0) return;
+
+      if (typeof db.updateCatalogProgressBatch === 'function') {
         try {
-          await db.updateCatalogProgress(key, update.processedFiles, update.labelCount, update.metrics || null);
+          await db.updateCatalogProgressBatch(payload);
+          return;
         } catch (err) {
-          console.warn('Failed to flush catalog progress for', key, err);
+          console.warn('Failed to flush catalog progress in batch mode. Falling back.', err);
+        }
+      }
+
+      for (const update of payload) {
+        try {
+          await db.updateCatalogProgress(
+            update.id,
+            update.processedFiles,
+            update.labelCount,
+            update.metrics
+          );
+        } catch (err) {
+          console.warn('Failed to flush catalog progress for', update.id, err);
         }
       }
     })();

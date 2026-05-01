@@ -11,6 +11,88 @@
     return rawLine.charCodeAt(lastIdx) === 13 ? rawLine.slice(0, -1) : rawLine;
   }
 
+  // Streaming parser
+  async function parseLabelStream(stream, metadata, onLabelParsed) {
+    const reader = stream.getReader();
+    let partialLine = '';
+    let currentLabel = null;
+    const m = metadata || {};
+    const model = m.model || '';
+    const culture = m.culture || '';
+    const prefix = m.prefix || '';
+    const sourcePath = m.sourcePath || '';
+
+    function processLine(rawLine) {
+      const line = normalizeLine(rawLine);
+      if (!line) return;
+
+      if (line.charCodeAt(0) === 32 && line.charCodeAt(1) === 59) {
+        if (currentLabel) {
+          const helpText = line.slice(2).trim();
+          if (helpText) {
+            currentLabel.help = currentLabel.help
+              ? `${currentLabel.help} ${helpText}`
+              : helpText;
+          }
+        }
+        return;
+      }
+
+      if (currentLabel) {
+        onLabelParsed(currentLabel);
+        currentLabel = null;
+      }
+
+      const equalsIndex = line.indexOf('=');
+      if (equalsIndex > 0 && line.charCodeAt(0) !== 32) {
+        const labelId = line.slice(0, equalsIndex);
+        const text = line.slice(equalsIndex + 1);
+        if (!labelId.trim()) return;
+
+        const labelKey = model || culture || prefix
+          ? `${model}|${culture}|${prefix}|${labelId}`
+          : labelId;
+
+        currentLabel = {
+          id: labelKey,
+          fullId: prefix ? `@${prefix}:${labelId}` : labelId,
+          labelId,
+          text,
+          help: '',
+          model,
+          culture,
+          prefix,
+          sourcePath
+        };
+      }
+    }
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = partialLine + value;
+        const lines = chunk.split('\n');
+        partialLine = lines.pop(); // keep the last partial line
+
+        for (let i = 0; i < lines.length; i++) {
+          processLine(lines[i]);
+        }
+      }
+      
+      if (partialLine) {
+        processLine(partialLine);
+      }
+      
+      if (currentLabel) {
+        onLabelParsed(currentLabel);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
   function parseLabelFile(content, metadata) {
     const source = String(content || '');
     const lines = source.split('\n');
@@ -89,6 +171,7 @@
 
   scope.SharedLabelParser = {
     parseLabelFile,
+    parseLabelStream,
     serializeLabelFile
   };
 })(typeof self !== 'undefined' ? self : globalThis);

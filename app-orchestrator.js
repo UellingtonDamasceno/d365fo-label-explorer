@@ -132,6 +132,7 @@ const discoveryController = createDiscoveryController({
   t,
   showInfo,
   showError,
+  showSuccess,
   showOnboarding,
   hideSplash,
   getLanguageFlag,

@@ -428,33 +428,10 @@
           </select>
         </div>
 
-        <!-- SPEC-19: Hybrid Search Settings -->
+        <!-- SPEC-19: Search Performance (Simplified) -->
         <div class="filter-section">
           <label class="filter-label" data-i18n="search_performance">🔍 Search Performance</label>
-          
-          <label class="toggle-container">
-            <input type="checkbox" id="setting-hybrid-search" checked>
-            <span class="toggle-switch"></span>
-            <span class="toggle-label" data-i18n="enable_hybrid_search">Enable Hybrid Search</span>
-          </label>
-          <small class="setting-hint" data-i18n="hint_hybrid_search">Uses memory cache for fast fuzzy search. Disable to force IndexedDB-only searches (slower but uses less RAM).</small>
-
-          <div class="display-option" style="margin-top: 1rem;">
-            <label class="display-option-label" data-i18n="max_models_memory">Max Models in Memory</label>
-            <div class="number-input-group">
-              <input type="number" id="setting-max-models" min="1" max="20" value="5" class="number-input">
-              <small class="setting-hint" data-i18n="hint_max_models">Higher values = faster search, more RAM usage (default: 5)</small>
-            </div>
-          </div>
-
-          <div class="display-option" style="margin-top: 1rem;">
-            <label class="display-option-label" data-i18n="fuzzy_threshold">Fuzzy Search Threshold</label>
-            <div class="range-input-group">
-              <input type="range" id="setting-fuzzy-threshold" min="0" max="1" step="0.1" value="0.2" class="range-input">
-              <span id="fuzzy-threshold-value" class="range-value">0.2</span>
-              <small class="setting-hint" data-i18n="hint_fuzzy_threshold">Lower = stricter matching, Higher = more tolerance for typos</small>
-            </div>
-          </div>
+          <p class="setting-hint">Search is powered by SQLite FTS for maximum scalability. Local RAM usage is optimized for large datasets.</p>
         </div>
 
         <!-- SPEC-35: AI & Intelligence -->
@@ -1124,7 +1101,7 @@
   <!-- Scripts -->
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="utils/bloom-filter.js"></script>
-  <script src="libs/flexsearch.bundle.min.js"></script>
+
   <script type="module" src="app.js"></script>
 </body>
 </html>

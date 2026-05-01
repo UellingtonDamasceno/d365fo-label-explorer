@@ -1,189 +1,138 @@
 /**
  * Indexer Worker - SPEC-23: Smart Batching Architecture
- * SPEC-42: Bloom Filter & FlexSearch Export
+ * SPEC-42: Bloom Filter Export
  */
 
-// SPEC-42: Use importScripts for global libraries (more compatible than ESM in workers)
-importScripts('../libs/flexsearch.bundle.min.js');
-importScripts('../utils/bloom-filter.js');
-importScripts('./utils/label-parser.js');
+// SPEC-42: Use imports for module workers
+import '../utils/bloom-filter.js';
+import './utils/label-parser.js';
 
 let runtimeDbName = null;
 let runtimeDbVersion = null;
-let openWorkerDBBridge = null;
 
 // Smart Batching Constants
-const BATCH_SIZE = 1000;          // Reduced from 5000 to prevent RAM spikes in Main Thread
-const FILE_CONCURRENCY = 3;       // Reduced to lower contention
+const BATCH_SIZE = 250;           // Reduced from 1000 to prevent RAM spikes and lock OPFS less
+const FILE_CONCURRENCY = 2;       // Reduced to 2 to limit concurrent stream overhead
 const PROGRESS_INTERVAL = 10;     // Report every N files
+const MAX_PENDING_WRITES = 20;    // Apply backpressure before promise lists grow too much
 
-let db = null;
-let pendingWrites = [];           // Track fire-and-forget promises
+let pendingWrites = new Set();    // Track in-flight writes only
 
 /**
- * Initialize IndexedDB connection in worker
+ * Initialize SQLite connection in worker
  */
-async function resolveOpenWorkerDB() {
-  if (openWorkerDBBridge) return openWorkerDBBridge;
-  const mod = await import('../core/db-connection.js');
-  if (typeof mod.openWorkerDB !== 'function') {
-    throw new Error('openWorkerDB is not available in core/db-connection.js');
-  }
-  openWorkerDBBridge = mod.openWorkerDB;
-  return openWorkerDBBridge;
+async function initDB() {
+  const { initDB: initSQLite } = await import('../core/db.js');
+  return await initSQLite();
 }
 
-async function initDB() {
-  if (db) return db;
-  if (!runtimeDbName || typeof runtimeDbVersion !== 'number') {
-    throw new Error('Worker DB configuration missing. Pass dbName and dbVersion from app.js.');
+function normalizeLabelForSearch(label) {
+  const normalizedText = (label.text || '').toLowerCase();
+  const normalizedId = (label.labelId || '').toLowerCase();
+  label.s = `${normalizedId} ${normalizedText}`.trim();
+  return label;
+}
+
+function enrichLabelsForSearch(labels) {
+  for (const label of labels) {
+    normalizeLabelForSearch(label);
   }
-  const openWorkerDB = await resolveOpenWorkerDB();
-  db = await openWorkerDB({ dbName: runtimeDbName, dbVersion: runtimeDbVersion });
-  db.onversionchange = () => {
-    db.close();
-    db = null;
-  };
-  return db;
+  return labels;
+}
+
+async function parseFileLabels(file, metadata, onLabel) {
+  const canStream = typeof self.SharedLabelParser?.parseLabelStream === 'function'
+    && typeof file.stream === 'function'
+    && typeof TextDecoderStream !== 'undefined';
+
+  if (canStream) {
+    const decodedStream = file.stream().pipeThrough(new TextDecoderStream());
+    await self.SharedLabelParser.parseLabelStream(decodedStream, metadata, (label) => {
+      onLabel(normalizeLabelForSearch(label));
+    });
+    return;
+  }
+
+  const content = await file.text();
+  const labels = self.SharedLabelParser.parseLabelFile(content, metadata);
+  for (const label of labels) {
+    onLabel(normalizeLabelForSearch(label));
+  }
 }
 
 /**
  * SPEC-23: Fire-and-forget batch save (non-blocking)
- * Returns promise but caller doesn't await it during parsing
+ * Updated to use SQLite via db.js proxy
  */
 function saveBatchFireAndForget(labels, affectedPairs = null) {
   if (!labels.length) return Promise.resolve(0);
   
   const writeStart = performance.now();
-  const promise = new Promise((resolve) => {
-    const tx = db.transaction('labels', 'readwrite', { durability: 'relaxed' });
-    const store = tx.objectStore('labels');
-
-    for (let i = 0; i < labels.length; i++) {
-      store.put(labels[i]);
-    }
-
-    tx.oncomplete = () => {
+  const promise = (async () => {
+    try {
+      const { addLabels } = await import('../core/db.js');
+      await addLabels(labels);
+      
       const duration = performance.now() - writeStart;
-      // If we have pair stats, distribute the write time
       if (affectedPairs) {
         const share = duration / affectedPairs.length;
         for (const pair of affectedPairs) {
           pair.totalProcessingMs += share;
         }
       }
-      resolve(labels.length);
-    };
-    tx.onerror = () => {
-      const err = tx.error;
+      return labels.length;
+    } catch (err) {
       const isQuota = err?.name === 'QuotaExceededError' || err?.code === 22;
       self.postMessage({
         type: 'DB_ERROR',
-        error: err?.message || 'Unknown DB error',
+        error: err?.message || 'Unknown SQLite error',
         isQuota,
         labelsLost: labels.length
       });
-      resolve(0); // Keep fire-and-forget behavior
-    };
-  });
+      return 0;
+    }
+  })();
   
-  pendingWrites.push(promise);
-  return promise;
+  let trackedPromise = null;
+  trackedPromise = promise.finally(() => {
+    pendingWrites.delete(trackedPromise);
+  });
+  pendingWrites.add(trackedPromise);
+  return trackedPromise;
 }
 
 /**
  * Wait for all pending writes to complete
  */
 async function flushPendingWrites() {
-  if (pendingWrites.length === 0) return;
-  await Promise.all(pendingWrites);
-  pendingWrites = [];
-}
-
-/**
- * SPEC-42: Save exported FlexSearch data to IndexedDB
- */
-function saveSearchIndexExport(model, culture, key, data) {
-  const promise = new Promise((resolve) => {
-    const tx = db.transaction('search_indices', 'readwrite', { durability: 'relaxed' });
-    const store = tx.objectStore('search_indices');
-    store.put({
-      id: `${model}|||${culture}|||${key}`,
-      model,
-      culture,
-      key,
-      data
-    });
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => resolve(); // Fire and forget
-  });
-  pendingWrites.push(promise);
-}
-
-/**
- * SPEC-42: Save Bloom Filter buffer to IndexedDB
- */
-function saveBloomFilter(model, culture, buffer) {
-  const promise = new Promise((resolve) => {
-    const tx = db.transaction('bloom_filters', 'readwrite', { durability: 'relaxed' });
-    const store = tx.objectStore('bloom_filters');
-    store.put({
-      id: `${model}|||${culture}`,
-      model,
-      culture,
-      buffer
-    });
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => resolve(); // Fire and forget
-  });
-  pendingWrites.push(promise);
-}
-
-/**
- * Enrich parsed labels with search helper fields
- */
-function enrichLabelsForSearch(labels) {
-  for (let i = 0; i < labels.length; i++) {
-    const label = labels[i];
-    const normalizedText = (label.text || '').toLowerCase();
-    const normalizedId = (label.labelId || '').toLowerCase();
-    const searchTarget = `${normalizedId} ${normalizedText}`.trim();
-    label.s = searchTarget;
-    label.tokens = [...new Set(searchTarget.split(/[\W_]+/).filter((t) => t.length > 2))];
-  }
-}
-
-function createFlexSearchDoc(label) {
-  return {
-    id: label.id,
-    fullId: label.fullId || '',
-    labelId: label.labelId || '',
-    text: label.text || '',
-    help: label.help || '',
-    model: label.model || '',
-    culture: label.culture || '',
-    prefix: label.prefix || '',
-    searchTarget: `${label.labelId || ''} ${label.text || ''} ${label.help || ''} ${label.fullId || ''}`.trim()
-  };
+  if (pendingWrites.size === 0) return;
+  await Promise.all([...pendingWrites]);
+  pendingWrites.clear();
 }
 
 /**
  * Process a single file (read + parse)
+ * Reads stream line by line, generating labels directly without accumulating in memory
  */
-async function processFile({ handle, metadata }) {
+async function processFile({ handle, metadata }, onLabel) {
   try {
     const startedAt = Date.now();
     const perfStart = performance.now();
     const file = await handle.getFile();
     const sizeBytes = file.size || 0;
-    const content = await file.text();
-    const labels = self.SharedLabelParser.parseLabelFile(content, metadata);
-    enrichLabelsForSearch(labels);
+    let fileLabelCount = 0;
+
+    await parseFileLabels(file, metadata, (label) => {
+      fileLabelCount++;
+      onLabel(label);
+    });
+    
     const durationMs = Math.max(0, performance.now() - perfStart);
     const endedAt = Date.now();
+    
     return {
       success: true,
-      labels,
+      labelCount: fileLabelCount,
       file: metadata.sourcePath,
       model: metadata.model,
       culture: metadata.culture,
@@ -215,7 +164,7 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
   let totalLabels = 0;
   let errors = [];
   
-  // Smart batch buffer (max 5000 labels)
+  // Smart batch buffer
   let batchBuffer = [];
   const pairStats = new Map();
   let streamRemaining = streamOptions?.enabled ? (streamOptions.limit || 0) : 0;
@@ -226,22 +175,26 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
   const mode = isPriority ? '🚀 PRIORITY' : '📦 BACKGROUND';
   console.log(`👷 Worker ${mode}: ${files.length} files`);
 
+  const flushBatch = () => {
+    if (batchBuffer.length === 0) return;
+    // Identify cultures in this batch to attribute write time
+    const batchPairs = [...new Set(batchBuffer.map(l => `${l.model}|||${l.culture}`))]
+      .map(key => pairStats.get(key))
+      .filter(Boolean);
+
+    const labelsToPersist = batchBuffer;
+    totalLabels += labelsToPersist.length;
+    batchBuffer = []; // Reset immediately (non-blocking)
+    saveBatchFireAndForget(labelsToPersist, batchPairs);
+  };
+
   // Pre-register model/culture totals for granular progress
   for (const fileTask of files) {
     const model = fileTask.metadata.model;
     const culture = fileTask.metadata.culture;
     const key = `${model}|||${culture}`;
     if (!pairStats.has(key)) {
-        // SPEC-42: Initialize Bloom Filter and FlexSearch for this pair
-        const flexIndex = new self.FlexSearch.Document({
-          document: {
-            id: 'id',
-            index: ['searchTarget'],
-            store: ['id', 'fullId', 'labelId', 'text', 'help', 'model', 'culture', 'prefix']
-          },
-          tokenize: 'forward', resolution: 9, cache: true
-        });
-        
+        // SPEC-42: Initialize Bloom Filter for this pair
         pairStats.set(key, {
           key,
           model,
@@ -253,8 +206,7 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
           totalBytes: 0,
           firstStartedAt: null,
           lastEndedAt: null,
-          bloomFilter: new BloomFilter({ expectedItems: 50000, falsePositiveRate: 0.01 }),
-          flexIndex: flexIndex
+          bloomFilter: new BloomFilter({ expectedItems: 50000, falsePositiveRate: 0.01 })
         });
       }
       pairStats.get(key).fileCount += 1;
@@ -263,58 +215,42 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
   // Process files with controlled concurrency
   for (let i = 0; i < files.length; i += FILE_CONCURRENCY) {
     const chunk = files.slice(i, i + FILE_CONCURRENCY);
-    const results = await Promise.all(chunk.map(processFile));
+    const results = await Promise.all(chunk.map(task => 
+      processFile(task, (label) => {
+        // Streaming label callback
+        batchBuffer.push(label);
+        
+        const pairKey = `${label.model}|||${label.culture}`;
+        const pairEntry = pairStats.get(pairKey);
+        if (pairEntry) {
+          pairEntry.bloomFilter.addText(label.text);
+          pairEntry.bloomFilter.addText(label.labelId);
+          pairEntry.bloomFilter.addText(label.help);
+        }
+
+        if (streamRemaining > 0 && isPriority) {
+          self.postMessage({ type: 'STREAM_LABELS', labels: [label] });
+          streamRemaining--;
+        }
+
+        if (batchBuffer.length >= BATCH_SIZE) {
+          flushBatch();
+        }
+      })
+    ));
     
     for (const result of results) {
       processedFiles++;
       const pairKey = `${result.model}|||${result.culture}`;
       const pairEntry = pairStats.get(pairKey);
       
-      if (result.success && result.labels.length > 0) {
-        if (streamRemaining > 0 && isPriority) {
-          const streamBatch = result.labels.slice(0, streamRemaining);
-          if (streamBatch.length > 0) {
-            self.postMessage({
-              type: 'STREAM_LABELS',
-              labels: streamBatch
-            });
-            streamRemaining -= streamBatch.length;
-          }
-        }
-
-        // Add to batch buffer and populate Search Structures
-        for (const label of result.labels) {
-          batchBuffer.push(label);
-
-          if (pairEntry) {
-            // SPEC-42: Populate Local Bloom Filter
-            pairEntry.bloomFilter.addText(label.text);
-            pairEntry.bloomFilter.addText(label.labelId);
-            pairEntry.bloomFilter.addText(label.help);
-            
-            // SPEC-42: Populate FlexSearch
-            pairEntry.flexIndex.add(createFlexSearchDoc(label));
-          }
-        }
-        
-        // SPEC-23: Fire-and-forget when batch is full
-        if (batchBuffer.length >= BATCH_SIZE) {
-          // Identify cultures in this batch to attribute write time
-          const batchPairs = [...new Set(batchBuffer.map(l => `${l.model}|||${l.culture}`))]
-            .map(key => pairStats.get(key))
-            .filter(Boolean);
-            
-          saveBatchFireAndForget([...batchBuffer], batchPairs); // Clone and fire
-          totalLabels += batchBuffer.length;
-          batchBuffer = []; // Reset immediately (non-blocking)
-        }
-      } else if (!result.success) {
+      if (!result.success) {
         errors.push({ file: result.file, error: result.error });
       }
 
       if (pairEntry) {
         pairEntry.processedFiles += 1;
-        pairEntry.labelCount += result.success ? result.labels.length : 0;
+        pairEntry.labelCount += result.success ? result.labelCount : 0;
         if (result.timing) {
           pairEntry.totalProcessingMs += result.timing.durationMs || 0;
           pairEntry.totalBytes += result.timing.sizeBytes || 0;
@@ -327,6 +263,10 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
         }
       }
     }
+
+    if (pendingWrites.size >= MAX_PENDING_WRITES) {
+      await Promise.race([...pendingWrites]);
+    }
     
     // Progress update
     if (processedFiles % PROGRESS_INTERVAL === 0 || processedFiles === files.length) {
@@ -335,8 +275,7 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
         processedFiles,
         totalFiles: files.length,
         totalLabels: totalLabels + batchBuffer.length,
-        // SPEC-42: Don't send complex objects over postMessage
-        pairProgress: [...pairStats.values()].map(({bloomFilter, flexIndex, ...rest}) => rest),
+        pairProgress: [...pairStats.values()].map(({bloomFilter, ...rest}) => rest),
         isPriority,
         phase: 'indexing'
       });
@@ -344,32 +283,19 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
   }
   
   // Flush remaining batch
-  if (batchBuffer.length > 0) {
-    const finalBatchPairs = [...new Set(batchBuffer.map(l => `${l.model}|||${l.culture}`))]
-      .map(key => pairStats.get(key))
-      .filter(Boolean);
-      
-    saveBatchFireAndForget([...batchBuffer], finalBatchPairs);
-    totalLabels += batchBuffer.length;
-    batchBuffer = [];
-  }
+  flushBatch();
   
-  // SPEC-42: Export FlexSearch indices and save Bloom Filters
+  // SPEC-42: Save Bloom Filters
   console.time('⏱️ Export Search Indices');
+  const { saveBloomFilter } = await import('../core/db.js');
   for (const pair of pairStats.values()) {
-    if (pair.labelCount > 0) {
-      // Export Local Bloom Filter
-      saveBloomFilter(pair.model, pair.culture, pair.bloomFilter.export());
-      
-      // Export FlexSearch
-      await new Promise((resolve) => {
-        let exportCount = 0;
-        pair.flexIndex.export((key, data) => {
-          saveSearchIndexExport(pair.model, pair.culture, key, data);
-          exportCount++;
-        });
-        setTimeout(resolve, 500); 
-      });
+    try {
+      if (pair.labelCount > 0 && pair.bloomFilter) {
+        // Export Local Bloom Filter
+        await saveBloomFilter(pair.model, pair.culture, pair.bloomFilter.export());
+      }
+    } finally {
+      pair.bloomFilter = null;
     }
   }
   
@@ -396,7 +322,7 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
     type: isPriority ? 'PRIORITY_DONE' : 'COMPLETE',
     totalLabels,
     processedFiles,
-    pairProgress: [...pairStats.values()].map(({bloomFilter, flexIndex, ...rest}) => rest),
+    pairProgress: [...pairStats.values()].map(({bloomFilter, ...rest}) => rest),
     errors,
     elapsed,
     labelsPerSec: elapsed > 0 ? Math.round(totalLabels / (elapsed / 1000)) : 0
@@ -429,9 +355,10 @@ async function processFileFast(fileHandle, metadata) {
     await initDB();
     
     const file = await fileHandle.getFile();
-    const content = await file.text();
-    const labels = self.SharedLabelParser.parseLabelFile(content, metadata);
-    enrichLabelsForSearch(labels);
+    const labels = [];
+    await parseFileLabels(file, metadata, (label) => {
+      labels.push(label);
+    });
     
     if (labels.length > 0) {
       await saveBatchFireAndForget(labels);
@@ -457,17 +384,9 @@ self.onmessage = async function(event) {
 
   if (dbName && dbName !== runtimeDbName) {
     runtimeDbName = dbName;
-    if (db) {
-      db.close();
-      db = null;
-    }
   }
   if (typeof dbVersion === 'number' && dbVersion !== runtimeDbVersion) {
     runtimeDbVersion = dbVersion;
-    if (db) {
-      db.close();
-      db = null;
-    }
   }
   if (!runtimeDbName || typeof runtimeDbVersion !== 'number') {
     self.postMessage({

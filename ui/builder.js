@@ -1315,24 +1315,34 @@ export function createBuilderController({
     return [...grouped.values()];
   }
 
-  function findDirectSaveTargets(prefix, culture, sourceModel = '') {
+  async function findDirectSaveTargets(prefix, culture, sourceModel = '') {
     const matches = [];
-    state.discoveryData.forEach((model) => {
-      if (sourceModel && model.model !== sourceModel) return;
-      model.cultures.forEach((cultureEntry) => {
-        if (cultureEntry.culture !== culture) return;
-        cultureEntry.files.forEach((file) => {
+    for (const model of state.discoveryData) {
+      if (sourceModel && model.model !== sourceModel) continue;
+      for (const cultureEntry of model.cultures) {
+        if (cultureEntry.culture !== culture) continue;
+        for (const file of cultureEntry.files) {
           if (file.prefix === prefix) {
+            let fileHandle = file.handle || null;
+            if (!fileHandle && cultureEntry.handle) {
+              try {
+                fileHandle = await cultureEntry.handle.getFileHandle(file.name);
+                file.handle = fileHandle;
+              } catch (_err) {
+                fileHandle = null;
+              }
+            }
+            if (!fileHandle) continue;
             matches.push({
               model: model.model,
               culture: cultureEntry.culture,
               name: file.name,
-              handle: file.handle
+              handle: fileHandle
             });
           }
-        });
-      });
-    });
+        }
+      }
+    }
     return matches;
   }
 
@@ -1375,7 +1385,7 @@ export function createBuilderController({
   }
 
   async function resolveDirectSaveTarget(group) {
-    let matches = findDirectSaveTargets(group.prefix, group.culture, group.sourceModel);
+    let matches = await findDirectSaveTargets(group.prefix, group.culture, group.sourceModel);
 
     if (matches.length === 1) return matches[0];
     if (matches.length > 1) {
@@ -1387,7 +1397,7 @@ export function createBuilderController({
     }
 
     if (!group.sourceModel) {
-      matches = findDirectSaveTargets(group.prefix, group.culture);
+      matches = await findDirectSaveTargets(group.prefix, group.culture);
       if (matches.length === 1) return matches[0];
       if (matches.length > 1) {
         throw new Error(t('builder_direct_save_ambiguous_target', {
@@ -1545,7 +1555,10 @@ export function createBuilderController({
       builderState.translatorWorker = null;
     }
 
-    managedTranslatorWorker = new ManagedWorker('./workers/translator.worker.js', { type: 'module' })
+    managedTranslatorWorker = new ManagedWorker(
+      new URL('../workers/translator.worker.js', import.meta.url),
+      { type: 'module' }
+    )
       .start()
       .onProgress((message) => {
         const { type, payload } = message || {};

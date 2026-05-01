@@ -20,6 +20,7 @@ export function createDiscoveryController({
   t,
   showInfo,
   showError,
+  showSuccess,
   showOnboarding,
   hideSplash,
   getLanguageFlag,
@@ -59,6 +60,64 @@ export function createDiscoveryController({
     renderBackgroundLanguageList,
     renderBackgroundSummary: renderBackgroundSummaryLocal
   } = progressController;
+
+  const MAX_TOTAL_INDEXER_WORKERS = 4;
+  let activeIndexerWorkers = 0;
+  let parserLoadPromise = null;
+
+  function reserveIndexerWorkerSlot() {
+    activeIndexerWorkers += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      activeIndexerWorkers = Math.max(0, activeIndexerWorkers - 1);
+    };
+  }
+
+  function resolveWorkerCount(mode, totalFiles) {
+    if (!totalFiles || totalFiles <= 0) return 0;
+    const hardware = navigator.hardwareConcurrency || 4;
+    const preferred = mode === 'priority'
+      ? Math.min(hardware, 3)
+      : mode === 'background'
+        ? 2
+        : Math.min(hardware, 4);
+    const availableSlots = Math.max(1, MAX_TOTAL_INDEXER_WORKERS - activeIndexerWorkers);
+    return Math.max(1, Math.min(preferred, availableSlots, totalFiles));
+  }
+
+  function releaseIndexedFileHandlesIfPossible() {
+    if (state.displaySettings.builderDirectSaveMode) return;
+
+    for (const model of state.discoveryData) {
+      for (const culture of model.cultures || []) {
+        for (const file of culture.files || []) {
+          if (file?.handle) {
+            file.handle = null;
+          }
+        }
+      }
+    }
+  }
+
+  async function ensureSharedLabelParser() {
+    if (globalThis.SharedLabelParser?.parseLabelFile) return;
+    if (!parserLoadPromise) {
+      parserLoadPromise = import('../workers/utils/label-parser.js');
+    }
+    await parserLoadPromise;
+    if (!globalThis.SharedLabelParser?.parseLabelFile) {
+      throw new Error('SharedLabelParser not available on main thread.');
+    }
+  }
+
+  function normalizeLabelForSearch(label) {
+    const normalizedText = (label.text || '').toLowerCase();
+    const normalizedId = (label.labelId || '').toLowerCase();
+    label.s = `${normalizedId} ${normalizedText}`.trim();
+    return label;
+  }
 
   /**
    * Handle folder selection
@@ -870,6 +929,7 @@ export function createDiscoveryController({
         state.indexingMode = 'idle';
         stopRealtimeStreaming();
         hideLiveIndexLine();
+        releaseIndexedFileHandlesIfPossible();
         emitIndexingCompleteSync(state.totalLabels, Date.now());
       }
     } catch (err) {
@@ -884,14 +944,187 @@ export function createDiscoveryController({
   /**
    * SPEC-23: Index files with worker pool
    */
+  async function indexFilesOnMainThread(fileTasks, isPriority = false, options = {}) {
+    const startTime = performance.now();
+    const totalFiles = fileTasks.length;
+    const streamLabels = Boolean(options.streamLabels);
+    const BATCH_SIZE_MAIN = 1000;
+    let streamRemaining = streamLabels
+      ? (options.streamLimit || state.realtimeStreaming.maxLabels)
+      : 0;
+
+    let totalLabels = 0;
+    let processedFiles = 0;
+    const errors = [];
+    const pairStats = new Map();
+    let batchBuffer = [];
+
+    await ensureSharedLabelParser();
+    await db.initDB();
+
+    for (const task of fileTasks) {
+      const key = `${task.metadata.model}|||${task.metadata.culture}`;
+      if (!pairStats.has(key)) {
+        pairStats.set(key, {
+          key,
+          model: task.metadata.model,
+          culture: task.metadata.culture,
+          fileCount: 0,
+          processedFiles: 0,
+          labelCount: 0,
+          totalProcessingMs: 0,
+          totalBytes: 0,
+          firstStartedAt: null,
+          lastEndedAt: null
+        });
+      }
+      pairStats.get(key).fileCount += 1;
+    }
+
+    const updateProgress = () => {
+      const percent = totalFiles > 0 ? Math.round((processedFiles / totalFiles) * 100) : 0;
+      if (elements.progressFill) {
+        elements.progressFill.style.width = `${percent}%`;
+      }
+      if (elements.indexingStatus) {
+        elements.indexingStatus.textContent = `${isPriority ? '🚀' : '📦'} ${processedFiles}/${totalFiles} files • ${totalLabels.toLocaleString()} labels`;
+      }
+
+      if (!isPriority && state.indexingMode === 'background') {
+        updateBackgroundProgress(processedFiles, totalFiles, totalLabels);
+      }
+
+      if (isPriority) {
+        const priorityEntries = [...state.backgroundIndexing.languageStatus.values()].filter((entry) => entry.isPriority);
+        const priorityProcessed = priorityEntries.reduce((sum, entry) => sum + entry.processedFiles, 0);
+        const priorityTotal = priorityEntries.reduce((sum, entry) => sum + entry.fileCount, 0);
+        updateBackgroundProgress(priorityProcessed, priorityTotal || totalFiles, totalLabels);
+      }
+    };
+
+    const flushBatch = async () => {
+      if (batchBuffer.length === 0) return;
+      const labelsToPersist = batchBuffer;
+      batchBuffer = [];
+      await db.addLabels(labelsToPersist);
+      totalLabels += labelsToPersist.length;
+    };
+
+    for (let i = 0; i < fileTasks.length; i += 1) {
+      const task = fileTasks[i];
+      const pairKey = `${task.metadata.model}|||${task.metadata.culture}`;
+      const pairEntry = pairStats.get(pairKey);
+      const startedAt = Date.now();
+
+      try {
+        const file = await task.handle.getFile();
+        let fileLabelCount = 0;
+
+        if (typeof globalThis.SharedLabelParser?.parseLabelStream === 'function'
+          && typeof TextDecoderStream !== 'undefined'
+          && typeof file.stream === 'function') {
+          const decodedStream = file.stream().pipeThrough(new TextDecoderStream());
+          await globalThis.SharedLabelParser.parseLabelStream(decodedStream, task.metadata, (label) => {
+            normalizeLabelForSearch(label);
+            batchBuffer.push(label);
+            fileLabelCount += 1;
+
+            if (streamRemaining > 0 && isPriority) {
+              searchService.indexLabels([label]);
+              state.realtimeStreaming.streamedLabels += 1;
+              state.totalLabels = state.backgroundIndexing.baseLabelCount + state.realtimeStreaming.streamedLabels;
+              updateLabelCount();
+              scheduleStreamingSearchRefresh();
+              streamRemaining -= 1;
+            }
+          });
+        } else {
+          const content = await file.text();
+          const labels = globalThis.SharedLabelParser.parseLabelFile(content, task.metadata);
+          for (const label of labels) {
+            normalizeLabelForSearch(label);
+            batchBuffer.push(label);
+            fileLabelCount += 1;
+
+            if (streamRemaining > 0 && isPriority) {
+              searchService.indexLabels([label]);
+              state.realtimeStreaming.streamedLabels += 1;
+              state.totalLabels = state.backgroundIndexing.baseLabelCount + state.realtimeStreaming.streamedLabels;
+              updateLabelCount();
+              scheduleStreamingSearchRefresh();
+              streamRemaining -= 1;
+            }
+          }
+        }
+
+        const endedAt = Date.now();
+
+        pairEntry.processedFiles += 1;
+        pairEntry.labelCount += fileLabelCount;
+        pairEntry.totalBytes += file.size || 0;
+        pairEntry.totalProcessingMs += Math.max(0, endedAt - startedAt);
+        if (!pairEntry.firstStartedAt || startedAt < pairEntry.firstStartedAt) {
+          pairEntry.firstStartedAt = startedAt;
+        }
+        if (!pairEntry.lastEndedAt || endedAt > pairEntry.lastEndedAt) {
+          pairEntry.lastEndedAt = endedAt;
+        }
+
+        if (batchBuffer.length >= BATCH_SIZE_MAIN) {
+          await flushBatch();
+        }
+      } catch (err) {
+        pairEntry.processedFiles += 1;
+        errors.push({
+          file: task.metadata.sourcePath,
+          error: err?.message || String(err)
+        });
+      }
+
+      processedFiles += 1;
+      if (processedFiles % 10 === 0 || processedFiles === totalFiles) {
+        mergeBackgroundPairProgress([...pairStats.values()], isPriority ? null : 'indexing');
+        queueCatalogProgressFlush();
+        updateProgress();
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    await flushBatch();
+    mergeBackgroundPairProgress([...pairStats.values()], isPriority ? 'ready' : null);
+    queueCatalogProgressFlush();
+
+    const elapsed = (performance.now() - startTime) / 1000;
+    console.log(`✅ ${isPriority ? 'PRIORITY' : 'BACKGROUND'} (main thread) complete: ${totalLabels} labels in ${elapsed.toFixed(1)}s`);
+
+    await flushCatalogProgressNow();
+    await db.setMetadata('lastIndexed', Date.now());
+    state.totalLabels = await db.getLabelCount();
+    searchService.setIDBTotalCount(state.totalLabels);
+    updateLabelCount();
+
+    return { totalLabels: state.totalLabels, processedFiles, errors };
+  }
+
   async function indexFilesWithWorkers(fileTasks, isPriority = false, options = {}) {
+    const storageMode = typeof db.getRuntimeStorageMode === 'function'
+      ? await db.getRuntimeStorageMode()
+      : 'unknown';
+
+    if (storageMode !== 'opfs') {
+      console.warn('SQLite transient mode detected; using main-thread indexing to keep a shared database context.');
+      return indexFilesOnMainThread(fileTasks, isPriority, options);
+    }
+
     const startTime = performance.now();
     const totalFiles = fileTasks.length;
     const streamLabels = Boolean(options.streamLabels);
     
-    const workerCount = isPriority 
-      ? Math.min(navigator.hardwareConcurrency || 4, 4)
-      : 2;
+    const workerCount = resolveWorkerCount(isPriority ? 'priority' : 'background', totalFiles);
+    if (workerCount <= 0) {
+      return { totalLabels: 0, processedFiles: 0, errors: [] };
+    }
     
     console.log(`🚀 ${isPriority ? 'PRIORITY' : 'BACKGROUND'} INDEXING: ${workerCount} workers for ${totalFiles} files`);
     
@@ -936,9 +1169,15 @@ export function createDiscoveryController({
       if (workerFiles.length === 0) continue;
       
       const worker = new Worker(
-        new URL('../workers/indexer.worker.js', import.meta.url)
+        new URL('../workers/indexer.worker.js', import.meta.url),
+        { type: 'module' }
       );
-      workers.push(worker);
+      const releaseWorkerSlot = reserveIndexerWorkerSlot();
+      const terminateWorker = () => {
+        try { worker.terminate(); } catch (_err) {}
+        releaseWorkerSlot();
+      };
+      workers.push({ worker, terminateWorker });
       workerStats.set(i, { labels: 0, files: 0 });
       
       const workerPromise = new Promise((resolve, reject) => {
@@ -994,7 +1233,7 @@ export function createDiscoveryController({
               if (e.data.errors?.length > 0) {
                 errors.push(...e.data.errors);
               }
-              worker.terminate();
+              terminateWorker();
               resolve({
                 labels: e.data.totalLabels,
                 files: e.data.processedFiles
@@ -1005,7 +1244,7 @@ export function createDiscoveryController({
         
         worker.onerror = (e) => {
           console.error('Worker error:', e);
-          worker.terminate();
+          terminateWorker();
           reject(e);
         };
         
@@ -1034,7 +1273,7 @@ export function createDiscoveryController({
     } catch (err) {
       console.error('Indexing error:', err);
       showError(t('toast_indexing_error') || 'Indexing failed');
-      workers.forEach(w => { try { w.terminate(); } catch (e) {} });
+      workers.forEach(({ terminateWorker }) => terminateWorker());
       return { totalLabels: 0, processedFiles: 0, errors };
     }
     
@@ -1045,6 +1284,7 @@ export function createDiscoveryController({
     await db.setMetadata('lastIndexed', Date.now());
     state.totalLabels = await db.getLabelCount();
     searchService.setIDBTotalCount(state.totalLabels);
+    updateLabelCount();
     
     return { totalLabels, processedFiles, errors };
   }
@@ -1086,7 +1326,7 @@ export function createDiscoveryController({
     let totalLabels = 0;
     let errors = [];
     
-    const workerCount = Math.min(navigator.hardwareConcurrency || 4, 6);
+    const workerCount = resolveWorkerCount('full', totalFiles);
     console.log(`🚀 SPEC-18 TURBO INGESTION: ${workerCount} workers for ${totalFiles} files`);
     
     function updateProgress() {
@@ -1121,9 +1361,15 @@ export function createDiscoveryController({
     const workers = [];
     for (let i = 0; i < workerCount; i++) {
       const worker = new Worker(
-        new URL('../workers/indexer.worker.js', import.meta.url)
+        new URL('../workers/indexer.worker.js', import.meta.url),
+        { type: 'module' }
       );
-      workers.push(worker);
+      const releaseWorkerSlot = reserveIndexerWorkerSlot();
+      const terminateWorker = () => {
+        try { worker.terminate(); } catch (_err) {}
+        releaseWorkerSlot();
+      };
+      workers.push({ worker, terminateWorker });
     }
     
     const filesPerWorker = Math.ceil(fileTasks.length / workerCount);
@@ -1134,7 +1380,8 @@ export function createDiscoveryController({
       const workerFiles = fileTasks.slice(i * filesPerWorker, (i + 1) * filesPerWorker);
       if (workerFiles.length === 0) continue;
       
-      const worker = workers[i];
+      const workerEntry = workers[i];
+      const worker = workerEntry.worker;
       const workerId = i;
       workerStats.set(workerId, { labels: 0, files: 0 });
       
@@ -1159,12 +1406,12 @@ export function createDiscoveryController({
             case 'COMPLETE':
               workerStats.set(workerId, { labels: e.data.totalLabels, files: e.data.processedFiles });
               if (e.data.errors?.length > 0) errors.push(...e.data.errors);
-              worker.terminate();
+              workerEntry.terminateWorker();
               resolve();
               break;
           }
         };
-        worker.onerror = (e) => { worker.terminate(); reject(e); };
+        worker.onerror = (e) => { workerEntry.terminateWorker(); reject(e); };
         worker.postMessage({
           type: 'PROCESS_FILES_HANDLES',
           files: workerFiles,
@@ -1180,7 +1427,7 @@ export function createDiscoveryController({
     } catch (err) {
       console.error('Indexing error:', err);
       showError(t('toast_indexing_error') || 'Indexing failed');
-      workers.forEach(w => { try { w.terminate(); } catch (e) {} });
+      workers.forEach(({ terminateWorker }) => terminateWorker());
       return;
     }
     
@@ -1197,6 +1444,7 @@ export function createDiscoveryController({
     await showMainInterface(indexedAt);
     searchService.invalidateSearchCache();
     emitIndexingCompleteSync(totalLabels, indexedAt);
+    releaseIndexedFileHandlesIfPossible();
     
     if (errors.length > 0) {
       showInfo(t('toast_indexing_skipped', { count: errors.length }));
@@ -1308,6 +1556,7 @@ export function createDiscoveryController({
     if (!isPriority) {
       renderBackgroundSummary();
       renderBackgroundLanguageList();
+      releaseIndexedFileHandlesIfPossible();
     }
     
     return result;
@@ -1339,10 +1588,9 @@ export function createDiscoveryController({
       const backgroundFiles = [];
       for (const model of newDiscoveryData) {
         for (const culture of model.cultures) {
-          const fileList = isPriority ? priorityFiles : backgroundFiles; // logical error in my thought, fixing:
-          const isPriority = priorityCultures.includes(culture.culture);
+          const isPriorityCulture = priorityCultures.includes(culture.culture);
           for (const file of culture.files) {
-            (isPriority ? priorityFiles : backgroundFiles).push({ model: model.model, culture: culture.culture, file });
+            (isPriorityCulture ? priorityFiles : backgroundFiles).push({ model: model.model, culture: culture.culture, file });
           }
         }
       }
@@ -1379,6 +1627,7 @@ export function createDiscoveryController({
         } else {
           state.indexingMode = 'idle';
           hideBackgroundProgressIndicator();
+          releaseIndexedFileHandlesIfPossible();
           await searchService.refreshGlobalBloomFilter();
         }
       }
@@ -1445,6 +1694,7 @@ export function createDiscoveryController({
         
         state.indexingMode = 'idle';
         hideBackgroundProgressIndicator();
+        releaseIndexedFileHandlesIfPossible();
         await searchService.refreshGlobalBloomFilter();
         
         state.totalLabels = finalLabelCount;
