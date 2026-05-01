@@ -306,7 +306,14 @@ function workerSearch(type, query, options) {
     const id = ++searchRequestId;
     pendingSearches.set(id, { resolve, reject });
     
-    searchWorker.postMessage({ type, id, query, options, dbName: DB_NAME, dbVersion: DB_VERSION });
+    searchWorker.postMessage({ 
+      type, 
+      id, 
+      query, 
+      options, 
+      dbName: 'd365fo-labels', 
+      dbVersion: 10 
+    });
   });
 }
 

@@ -1172,6 +1172,14 @@ export function createDiscoveryController({
         new URL('../workers/indexer.worker.js', import.meta.url),
         { type: 'module' }
       );
+
+      // Pass DB config first
+      worker.postMessage({
+        type: 'INIT_DB',
+        dbName: DB_NAME,
+        dbVersion: DB_VERSION
+      });
+
       const releaseWorkerSlot = reserveIndexerWorkerSlot();
       const terminateWorker = () => {
         try { worker.terminate(); } catch (_err) {}
@@ -1364,6 +1372,14 @@ export function createDiscoveryController({
         new URL('../workers/indexer.worker.js', import.meta.url),
         { type: 'module' }
       );
+
+      // Pass DB config first
+      worker.postMessage({
+        type: 'INIT_DB',
+        dbName: DB_NAME,
+        dbVersion: DB_VERSION
+      });
+
       const releaseWorkerSlot = reserveIndexerWorkerSlot();
       const terminateWorker = () => {
         try { worker.terminate(); } catch (_err) {}
