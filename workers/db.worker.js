@@ -2,15 +2,14 @@
  * Centralized Database Worker - SPEC-11 Extension
  * Handles all SQLite operations (OPFS) in a dedicated background thread.
  */
-console.log('[DB Worker] Script starting...');
+console.log('[DB Worker] Starting bootstrap...');
 
-import sqlite3InitModule from '../libs/sqlite/sqlite3.mjs';
-
-// SPEC-11: Resolve paths relative to the worker location
+// SPEC-11: We MUST set this state BEFORE the sqlite3 module loads.
+// Since static imports are hoisted, we use a dynamic import below.
 const BASE_URL = new URL('../libs/sqlite/', import.meta.url).href;
 globalThis.sqlite3InitModuleState = {
     sqlite3Dir: BASE_URL,
-    debugModule: () => {} // Required by the library to avoid TypeError
+    debugModule: (...args) => console.debug('[SQLite Debug]', ...args)
 };
 
 const DB_NAME = 'd365fo-labels';
@@ -25,6 +24,9 @@ async function initSQLite() {
     
     console.log('[DB Worker] Initializing SQLite WASM...');
     try {
+        // Dynamic import to ensure global state is ready
+        const { default: sqlite3InitModule } = await import('../libs/sqlite/sqlite3.mjs');
+
         sqlite3 = await sqlite3InitModule({
             print: (...args) => console.log('[SQLite]', ...args),
             printErr: (...args) => console.error('[SQLite Error]', ...args),
