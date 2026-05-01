@@ -3,6 +3,9 @@
  * Communicates with workers/db.worker.js to enable OPFS support.
  */
 import { ManagedWorker } from '../utils/error-boundary.js';
+import { DB_NAME, DB_VERSION } from './db-constants.js';
+
+export { DB_NAME, DB_VERSION };
 
 const dbWorker = new ManagedWorker(new URL('../workers/db.worker.js', import.meta.url).href, { type: 'module' });
 

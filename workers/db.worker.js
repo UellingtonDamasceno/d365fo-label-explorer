@@ -34,14 +34,28 @@ async function initSQLite() {
         });
 
         if (sqlite3.oo1.OpfsDb) {
-            try {
-                db = new sqlite3.oo1.OpfsDb('/' + DB_NAME, 'c');
-                console.log('[DB Worker] OPFS Database initialized:', db.filename);
-                db.exec('PRAGMA synchronous = NORMAL; PRAGMA journal_mode = WAL;');
-            } catch (opfsErr) {
-                console.warn('[DB Worker] OPFS creation failed, falling back to memory:', opfsErr);
-                db = new sqlite3.oo1.DB('/' + DB_NAME, 'c');
+            let retryCount = 0;
+            const maxRetries = 3;
+            
+            while (retryCount < maxRetries) {
+                try {
+                    db = new sqlite3.oo1.OpfsDb('/' + DB_NAME, 'c');
+                    console.log('[DB Worker] OPFS Database initialized:', db.filename);
+                    db.exec('PRAGMA synchronous = NORMAL; PRAGMA journal_mode = WAL;');
+                    break; 
+                } catch (opfsErr) {
+                    retryCount++;
+                    if (opfsErr.message.includes('locked') || opfsErr.message.includes('NoModificationAllowedError')) {
+                        console.warn(`[DB Worker] OPFS locked, retry ${retryCount}/${maxRetries}...`);
+                        await new Promise(r => setTimeout(r, 200)); 
+                        continue;
+                    }
+                    console.warn('[DB Worker] OPFS creation failed, falling back to memory:', opfsErr);
+                    db = new sqlite3.oo1.DB('/' + DB_NAME, 'c');
+                    break;
+                }
             }
+            if (!db) db = new sqlite3.oo1.DB('/' + DB_NAME, 'c');
         } else {
             db = new sqlite3.oo1.DB('/' + DB_NAME, 'c');
             console.warn('[DB Worker] OPFS NOT available (library limitation), using memory.');
