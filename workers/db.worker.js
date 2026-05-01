@@ -1,15 +1,15 @@
 /**
  * Centralized Database Worker - SPEC-11 Extension
  * Handles all SQLite operations (OPFS) in a dedicated background thread.
- * Required because OPFS requires Atomics.wait() which is forbidden on the main thread.
  */
+console.log('[DB Worker] Script starting...');
 
 import sqlite3InitModule from '../libs/sqlite/sqlite3.mjs';
 
-// SPEC-11: Force sqlite3 to load its internal OPFS proxy from the local path.
-const sqlite3Dir = new URL('../libs/sqlite/', import.meta.url).href;
+// SPEC-11: Resolve paths relative to the worker location
+const BASE_URL = new URL('../libs/sqlite/', import.meta.url).href;
 globalThis.sqlite3InitModuleState = {
-    sqlite3Dir: sqlite3Dir
+    sqlite3Dir: BASE_URL
 };
 
 const DB_NAME = 'd365fo-labels';
@@ -22,26 +22,32 @@ let db = null;
 async function initSQLite() {
     if (db) return;
     
+    console.log('[DB Worker] Initializing SQLite WASM...');
     try {
         sqlite3 = await sqlite3InitModule({
-            print: console.log,
-            printErr: console.error,
-            locateFile: (file) => new URL(`../libs/sqlite/${file}`, import.meta.url).href
+            print: (...args) => console.log('[SQLite]', ...args),
+            printErr: (...args) => console.error('[SQLite Error]', ...args),
+            locateFile: (file) => new URL(file, BASE_URL).href
         });
 
         if (sqlite3.oo1.OpfsDb) {
-            db = new sqlite3.oo1.OpfsDb('/' + DB_NAME, 'c');
-            console.log('[DB Worker] OPFS Database initialized:', db.filename);
-            db.exec('PRAGMA synchronous = NORMAL; PRAGMA journal_mode = WAL;');
+            try {
+                db = new sqlite3.oo1.OpfsDb('/' + DB_NAME, 'c');
+                console.log('[DB Worker] OPFS Database initialized:', db.filename);
+                db.exec('PRAGMA synchronous = NORMAL; PRAGMA journal_mode = WAL;');
+            } catch (opfsErr) {
+                console.warn('[DB Worker] OPFS creation failed, falling back to memory:', opfsErr);
+                db = new sqlite3.oo1.DB('/' + DB_NAME, 'c');
+            }
         } else {
             db = new sqlite3.oo1.DB('/' + DB_NAME, 'c');
-            console.warn('[DB Worker] OPFS NOT available, using memory.');
+            console.warn('[DB Worker] OPFS NOT available (library limitation), using memory.');
         }
 
         setupSchema();
         return true;
     } catch (err) {
-        console.error('[DB Worker] Failed to init SQLite:', err);
+        console.error('[DB Worker] CRITICAL initialization failure:', err);
         throw err;
     }
 }
