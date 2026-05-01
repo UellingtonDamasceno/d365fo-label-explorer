@@ -35,29 +35,53 @@ export async function initDB() {
       }
 
       sqlite3 = await self.sqlite3InitModule({
-        print: () => {}, 
-        printErr: () => {} 
+        print: () => {},
+        printErr: () => {}
       });
 
       console.log('SQLite3 version', sqlite3.version.libVersion);
 
-      if (sqlite3.oo1.OpfsDb) {
+      const isMainThread = typeof window !== 'undefined' && self === window;
+      let opfsReady = false;
+
+      // Prefer the OPFS SAH Pool VFS: it works on the main thread because it
+      // uses FileSystemSyncAccessHandle instead of Atomics.wait(). The classic
+      // OpfsDb VFS is restricted to Workers and is only attempted as a fallback
+      // when running off the main thread.
+      if (typeof sqlite3.installOpfsSAHPoolVfs === 'function') {
         try {
-            db = new sqlite3.oo1.OpfsDb('/' + DB_NAME, 'c');
-            runtimeStorageMode = 'opfs';
-            console.log('SQLite OPFS Database initialized:', db.filename);
-            
-            // Performance Pragmas for OPFS
-            db.exec('PRAGMA synchronous = NORMAL;');
-            db.exec('PRAGMA journal_mode = WAL;');
-        } catch (opfsErr) {
-            console.warn('OPFS creation failed, falling back to memory', opfsErr);
-            db = new sqlite3.oo1.DB('/' + DB_NAME, 'c');
-            runtimeStorageMode = 'memory';
-            db.exec('PRAGMA synchronous = OFF;');
-            db.exec('PRAGMA journal_mode = MEMORY;');
+          const poolUtil = await sqlite3.installOpfsSAHPoolVfs({
+            name: 'd365fo-sahpool',
+            initialCapacity: 8,
+            clearOnInit: false
+          });
+          db = new poolUtil.OpfsSAHPoolDb('/' + DB_NAME);
+          runtimeStorageMode = 'opfs-sahpool';
+          opfsReady = true;
+          console.log('SQLite OPFS (SAH Pool) Database initialized:', db.filename);
+
+          // Performance Pragmas for OPFS
+          db.exec('PRAGMA synchronous = NORMAL;');
+          db.exec('PRAGMA journal_mode = WAL;');
+        } catch (sahErr) {
+          console.warn('OPFS SAH Pool VFS unavailable:', sahErr);
         }
-      } else {
+      }
+
+      if (!opfsReady && !isMainThread && sqlite3.oo1.OpfsDb) {
+        try {
+          db = new sqlite3.oo1.OpfsDb('/' + DB_NAME, 'c');
+          runtimeStorageMode = 'opfs';
+          opfsReady = true;
+          console.log('SQLite OPFS Database initialized:', db.filename);
+          db.exec('PRAGMA synchronous = NORMAL;');
+          db.exec('PRAGMA journal_mode = WAL;');
+        } catch (opfsErr) {
+          console.warn('OPFS VFS creation failed:', opfsErr);
+        }
+      }
+
+      if (!opfsReady) {
         db = new sqlite3.oo1.DB('/' + DB_NAME, 'c');
         runtimeStorageMode = 'memory';
         console.warn('SQLite OPFS is NOT available, using transient memory database.');
