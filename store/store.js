@@ -13,7 +13,6 @@ const _state = {
     cultures: [], // Multiple cultures
     models: [], // Multiple models
     exactMatch: false,
-    useBloomFilter: true, // SPEC-42: Fast-fail toggle
     requiredCultures: [],
     hideIncomplete: false
   },

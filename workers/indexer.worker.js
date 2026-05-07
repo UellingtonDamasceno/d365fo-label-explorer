@@ -1,10 +1,8 @@
 /**
  * Indexer Worker - SPEC-23: Smart Batching Architecture
- * SPEC-42: Bloom Filter Export
  */
 
 // SPEC-42: Use imports for module workers
-import '../utils/bloom-filter.js';
 import './utils/label-parser.js';
 
 let runtimeDbName = null;
@@ -60,14 +58,6 @@ async function saveBatchRequest(labels) {
       self.postMessage({ type: 'REQUEST_DB_WRITE', labels, batchId, isUpdate: false });
     }
   });
-}
-
-/**
- * SPEC-42: Request main thread to save bloom filter
- */
-function saveBloomFilterRequest(model, culture, buffer) {
-  // buffer is a Uint8Array, we must transfer its underlying ArrayBuffer
-  self.postMessage({ type: 'REQUEST_BLOOM_SAVE', model, culture, buffer }, [buffer.buffer]);
 }
 
 function normalizeLabelForSearch(label) {
@@ -196,8 +186,7 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
             parseTimeMs: 0,
             persistTimeMs: 0,
             totalBytes: 0
-          },
-          bloomFilter: new BloomFilter({ expectedItems: 50000, falsePositiveRate: 0.01 })
+          }
         });
       }
       pairStats.get(key).fileCount += 1;
@@ -212,12 +201,6 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
       
       return processFile(task, (label) => {
         batchBuffer.push(label);
-        
-        if (pairEntry) {
-          pairEntry.bloomFilter.addText(label.text);
-          pairEntry.bloomFilter.addText(label.labelId);
-          pairEntry.bloomFilter.addText(label.help);
-        }
 
         if (streamRemaining > 0 && isPriority) {
           self.postMessage({ type: 'STREAM_LABELS', labels: [label] });
@@ -260,25 +243,13 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
         processedFiles,
         totalFiles: files.length,
         totalLabels: totalLabels + batchBuffer.length,
-        pairProgress: [...pairStats.values()].map(({bloomFilter, ...rest}) => rest),
+        pairProgress: [...pairStats.values()],
         isPriority
       });
     }
   }
   
   await flushBatch([...pairStats.values()]);
-  
-  console.time('⏱️ Export Search Indices');
-  for (const pair of pairStats.values()) {
-    try {
-      if (pair.labelCount > 0 && pair.bloomFilter) {
-        saveBloomFilterRequest(pair.model, pair.culture, pair.bloomFilter.export());
-      }
-    } finally {
-      pair.bloomFilter = null;
-    }
-  }
-  console.timeEnd('⏱️ Export Search Indices');
 
   const now = Date.now();
   for (const pair of pairStats.values()) {
@@ -294,7 +265,7 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
     type: isPriority ? 'PRIORITY_DONE' : 'COMPLETE',
     totalLabels,
     processedFiles,
-    pairProgress: [...pairStats.values()].map(({bloomFilter, ...rest}) => rest),
+    pairProgress: [...pairStats.values()],
     errors,
     elapsed,
     labelsPerSec: elapsed > 0 ? Math.round(totalLabels / (elapsed / 1000)) : 0

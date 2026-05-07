@@ -1,12 +1,8 @@
 /**
  * Search Worker for D365FO Label Explorer
- * SPEC-42: Bloom Filter Integration
  * Centralized Architecture: Requests data from main thread to avoid DB locks.
  */
 
-import '../utils/bloom-filter.js';
-
-const bloomFiltersCache = new Map();
 const pendingRequests = new Map();
 let requestIdCounter = 0;
 
@@ -22,41 +18,11 @@ async function requestFromDB(type, payload = {}) {
 }
 
 /**
- * Load Bloom Filter
- */
-async function loadBloomFilter(model, culture) {
-  if (!model || !culture) return null;
-  const key = `${model}|||${culture}`;
-  
-  if (bloomFiltersCache.has(key)) return bloomFiltersCache.get(key);
-  
-  try {
-    const result = await requestFromDB('getBloomFilter', { model, culture });
-    if (result && result.buffer) {
-      const filter = new BloomFilter({ buffer: result.buffer });
-      bloomFiltersCache.set(key, filter);
-      return filter;
-    }
-  } catch (e) {
-    console.warn(`[Search Worker] Bloom Filter load failed for ${key}:`, e.message);
-  }
-  
-  bloomFiltersCache.set(key, null);
-  return null;
-}
-
-/**
  * Search Logic
  */
 async function searchIndexedDB(query, options = {}) {
   const { culture, model, limit = 50, exactMatch = false, offset = 0 } = options;
   const lowerQuery = query?.toLowerCase() || '';
-  
-  // Fast-fail using Bloom Filter
-  if (lowerQuery && culture && model) {
-    const filter = await loadBloomFilter(model, culture);
-    if (filter && !filter.hasText(lowerQuery)) return [];
-  }
   
   // Try FTS first via main thread
   if (lowerQuery && !exactMatch && lowerQuery.length > 2) {
@@ -127,35 +93,6 @@ self.onmessage = async (e) => {
       case 'GET_CULTURES':
         result = await requestFromDB('getAllCultures');
         break;
-      case 'BUILD_GLOBAL_FILTER':
-        const filter = new BloomFilter({ expectedItems: 500000, falsePositiveRate: 0.01 });
-        // Fetch all labels in chunks to avoid memory issues
-        let offset = 0;
-        const chunkSize = 10000;
-        let hasMore = true;
-        
-        while (hasMore) {
-          const chunk = await requestFromDB('getLabels', { filters: { limit: chunkSize, offset } });
-          if (chunk.length === 0) {
-            hasMore = false;
-          } else {
-            for (const label of chunk) {
-              filter.addText(label.s || label.text);
-            }
-            offset += chunk.length;
-            if (chunk.length < chunkSize) hasMore = false;
-          }
-        }
-        
-        const buffer = filter.export();
-        await requestFromDB('saveBloomFilter', { model: 'global', culture: 'all', buffer });
-        
-        self.postMessage({
-          type: 'FILTER_BUILT',
-          id,
-          duration: (performance.now() - startTime).toFixed(2)
-        });
-        return; // Already sent response
       default:
         throw new Error(`Unknown search type: ${type}`);
     }

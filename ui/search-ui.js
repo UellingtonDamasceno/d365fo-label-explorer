@@ -64,9 +64,6 @@ export function createSearchUIController({
     if (elements.modalExactMatch) {
       elements.modalExactMatch.checked = !!state.filters.exactMatch;
     }
-    if (elements.modalUseBloomFilter) {
-      elements.modalUseBloomFilter.checked = !!state.filters.useBloomFilter;
-    }
     if (elements.modalHideIncomplete) {
       elements.modalHideIncomplete.checked = state.filters.hideIncomplete;
     }
@@ -211,7 +208,6 @@ export function createSearchUIController({
       
       const filterOptions = {
         exactMatch: state.filters.exactMatch,
-        useBloomFilter: state.filters.useBloomFilter,
         limit: state.searchPagination.limit,
         offset: state.searchPagination.offset,
         cultures: [...state.filters.cultures],
@@ -633,11 +629,6 @@ export function createSearchUIController({
     // Exact match toggle
     elements.modalExactMatch?.addEventListener('change', (e) => {
       state.filters.exactMatch = e.target.checked;
-    });
-
-    // SPEC-42: Bloom Filter toggle
-    elements.modalUseBloomFilter?.addEventListener('change', (e) => {
-      state.filters.useBloomFilter = e.target.checked;
     });
 
     // Compliance toggle

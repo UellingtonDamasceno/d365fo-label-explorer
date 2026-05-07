@@ -15,11 +15,6 @@ import { FLAGS } from '../utils/flags.js';
 import { labelCache } from './opfs-cache.js';
 import * as db from './db.js';
 
-// SPEC-42: Cache loaded Bloom Filters in memory
-const bloomFiltersCache = new Map();
-let globalBloomFilter = null;
-const BloomFilter = window.BloomFilter;
-
 // SPEC-42: Support for search cancellation
 let currentSearchAbortController = null;
 
@@ -33,81 +28,6 @@ let idbTotalCount = 0;
 
 // FASE 8.7: Debounced prefetch orchestration
 let prefetchTimer = null;
-
-/**
- * SPEC-42: Load Bloom Filter from Metadata (SQLite)
- */
-async function loadBloomFilter(model, culture) {
-  if (!model || !culture) return null;
-  const key = `${model}|||${culture}`;
-  
-  if (bloomFiltersCache.has(key)) {
-    return bloomFiltersCache.get(key);
-  }
-  
-  try {
-    const result = await db.getBloomFilter(model, culture);
-    if (result && result.buffer) {
-      const filter = new BloomFilter({ buffer: result.buffer });
-      bloomFiltersCache.set(key, filter);
-      return filter;
-    }
-  } catch (e) {
-    // Silent fail for bloom filter
-  }
-  
-  bloomFiltersCache.set(key, null);
-  return null;
-}
-
-/**
- * SPEC-42: Load Global Bloom Filter
- */
-async function loadGlobalBloomFilter() {
-  if (globalBloomFilter) return globalBloomFilter;
-  
-  try {
-    const result = await db.getBloomFilter('global', 'all');
-    if (result && result.buffer) {
-      globalBloomFilter = new BloomFilter({ buffer: result.buffer });
-      console.log('🌍 Global Bloom Filter loaded');
-      return globalBloomFilter;
-    }
-  } catch (e) {
-    // Silent fail
-  }
-  return null;
-  }
-
-/**
- * SPEC-42: Refresh Global Bloom Filter by triggering worker rebuild
- */
-export async function refreshGlobalBloomFilter() {
-  if (!searchWorker) return;
-  
-  console.log('🔄 Requesting Global Bloom Filter refresh...');
-  return new Promise((resolve, reject) => {
-    const id = Date.now();
-    
-    const handler = (e) => {
-      if (e.data.id === id && e.data.type === 'FILTER_BUILT') {
-        searchWorker.removeEventListener('message', handler);
-        // Force reload of local cache
-        globalBloomFilter = null;
-        loadGlobalBloomFilter().then(() => {
-          console.log('✅ Global Bloom Filter refreshed and reloaded');
-          resolve();
-        });
-      } else if (e.data.id === id && e.data.type === 'ERROR') {
-        searchWorker.removeEventListener('message', handler);
-        reject(new Error(e.data.error));
-      }
-    };
-    
-    searchWorker.addEventListener('message', handler);
-    searchWorker.postMessage({ type: 'BUILD_GLOBAL_FILTER', id, dbName: DB_NAME, dbVersion: DB_VERSION });
-  });
-}
 
 // FlexSearch is REMOVED to prevent OOM in large production scenarios.
 // All search operations are now handled by SQLite FTS via Search Worker.
@@ -209,7 +129,6 @@ function buildQueryCacheKey(query, options = {}) {
     cultures,
     models,
     exactMatch: !!options.exactMatch,
-    useBloomFilter: options.useBloomFilter !== false,
     limit: options.limit || 100,
     offset: options.offset || 0
   });
@@ -224,7 +143,7 @@ export function setIDBTotalCount(count) {
 }
 
 export function scheduleLikelyPrefetch(partialQuery, options = {}) {
-  // Prefetching models is still useful to warm up Bloom Filters or OS cache
+  // Prefetching models is still useful to warm up OS cache
   if (!FLAGS.USE_SEARCH_PREFETCH) return;
 
   const query = (partialQuery || '').trim();
@@ -267,9 +186,7 @@ function initSearchWorker() {
               const { requestType, payload: requestPayload } = e.data;
               let dbResult;
               
-              if (requestType === 'getBloomFilter') {
-                  dbResult = await db.getBloomFilter(requestPayload.model, requestPayload.culture);
-              } else if (requestType === 'searchFTS') {
+              if (requestType === 'searchFTS') {
                   dbResult = await db.searchFTS(requestPayload.query, requestPayload.limit, requestPayload.offset);
               } else if (requestType === 'getLabels') {
                   dbResult = await db.getLabels(requestPayload.filters);
@@ -365,9 +282,6 @@ export async function initSearch() {
     searchWorker.terminate();
     searchWorker = null;
   }
-  
-  // SPEC-42: Load Global Bloom Filter
-  loadGlobalBloomFilter();
   
   // Load settings from IndexedDB
   await loadSettings();
@@ -494,21 +408,6 @@ export async function search(query, options = {}) {
   if (canUseL1Cache) {
     const cached = getCachedQuery(cacheKey);
     if (cached) return cached;
-  }
-
-  // Bloom Filter check
-  if (query && options.useBloomFilter !== false && query.trim().length >= 3) {
-    if (cultures.length > 0 && singleModel) {
-      let possiblyExists = false;
-      for (const cult of cultures) {
-        const filter = await loadBloomFilter(singleModel, cult);
-        if (!filter || filter.hasText(query)) {
-          possiblyExists = true;
-          break;
-        }
-      }
-      if (!possiblyExists) return [];
-    }
   }
 
   let result = [];

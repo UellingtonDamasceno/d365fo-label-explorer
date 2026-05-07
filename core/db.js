@@ -230,26 +230,7 @@ export async function getBuilderSessions() {
     return res.payload.sort((a,b) => b.updatedAt - a.updatedAt);
 }
 
-// Bloom Filters
-export async function saveBloomFilter(model, culture, buffer) {
-    const key = `${model}|||${culture}`;
-    // SPEC-23 Optimization: Store as BLOB directly for maximum speed
-    return await dbWorker.send('KV_PUT_BLOB', { 
-        store: 'bloom_filters', 
-        key, 
-        value: new Uint8Array(buffer) 
-    });
-}
 
-export async function getBloomFilter(model, culture) {
-    const key = `${model}|||${culture}`;
-    const res = await dbWorker.send('KV_GET_BLOB', { store: 'bloom_filters', key });
-    if (res.payload) {
-        // SQLite WASM returns Uint8Array for BLOBs
-        return { buffer: res.payload.buffer };
-    }
-    return null;
-}
 
 export async function hasData() {
     const count = await getLabelCount();

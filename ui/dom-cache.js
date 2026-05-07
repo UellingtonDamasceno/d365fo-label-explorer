@@ -69,7 +69,6 @@ export function cacheDomElements() {
     modalModels: document.getElementById('modal-models'),
     modalLanguages: document.getElementById('modal-languages'),
     modalExactMatch: document.getElementById('modal-exact-match'),
-    modalUseBloomFilter: document.getElementById('modal-use-bloom-filter'),
     modalHideIncomplete: document.getElementById('modal-hide-incomplete'),
     selectedModelsSummary: document.getElementById('selected-models-summary'),
     selectedLanguagesSummary: document.getElementById('selected-languages-summary'),

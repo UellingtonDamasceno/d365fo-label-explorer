@@ -1210,10 +1210,6 @@ export function createDiscoveryController({
               })();
               break;
 
-            case 'REQUEST_BLOOM_SAVE':
-              db.saveBloomFilter(e.data.model, e.data.culture, e.data.buffer);
-              break;
-
             case 'STREAM_LABELS':
               if (state.realtimeStreaming.enabled && Array.isArray(e.data.labels) && e.data.labels.length > 0) {
                 searchService.indexLabels(e.data.labels);
@@ -1447,9 +1443,6 @@ export function createDiscoveryController({
                   console.error('Failed to acknowledge DB write:', err);
                 }
               })();
-              break;
-            case 'REQUEST_BLOOM_SAVE':
-              db.saveBloomFilter(e.data.model, e.data.culture, e.data.buffer);
               break;
             case 'PROGRESS':
             case 'FILE_COMPLETE':
@@ -1686,13 +1679,11 @@ export function createDiscoveryController({
             await startParallelIndexing(backgroundFiles, false);
             state.indexingMode = 'idle';
             hideBackgroundProgressIndicator();
-            await searchService.refreshGlobalBloomFilter();
           }, 100);
         } else {
           state.indexingMode = 'idle';
           hideBackgroundProgressIndicator();
           releaseIndexedFileHandlesIfPossible();
-          await searchService.refreshGlobalBloomFilter();
         }
       }
     } catch (err) {
@@ -1773,7 +1764,6 @@ export function createDiscoveryController({
         state.indexingMode = 'idle';
         hideBackgroundProgressIndicator();
         releaseIndexedFileHandlesIfPossible();
-        await searchService.refreshGlobalBloomFilter();
         
         state.totalLabels = finalLabelCount;
         searchService.invalidateSearchCache();
