@@ -73,9 +73,26 @@ function setupSchema() {
     // Drop old FTS table if it was created with incorrect content_rowid
     // This is necessary because VIRTUAL TABLE schemas are persistent.
     try {
-        db.exec(`DROP TABLE IF EXISTS labels_fts;`);
+        // First try to drop triggers to avoid side effects during FTS drop
+        db.exec(`
+            DROP TRIGGER IF EXISTS labels_ai;
+            DROP TRIGGER IF EXISTS labels_ad;
+            DROP TRIGGER IF EXISTS labels_au;
+            DROP TABLE IF EXISTS labels_fts;
+        `);
     } catch (e) {
-        console.warn('[DB Worker] Could not drop labels_fts (expected if it does not exist):', e);
+        console.warn('[DB Worker] FTS Drop failed, attempting forced recovery:', e);
+        // If SQLITE_CORRUPT_VTAB or similar occurs, we need to be more aggressive
+        try {
+            // Drop everything to start clean
+            db.exec(`
+                DROP TABLE IF EXISTS labels;
+                DROP TABLE IF EXISTS kv_store;
+                DROP TABLE IF EXISTS kv_blobs;
+            `);
+        } catch (fatal) {
+            console.error('[DB Worker] Fatal schema corruption:', fatal);
+        }
     }
 
     db.exec(`
