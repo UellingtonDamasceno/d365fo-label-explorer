@@ -1720,10 +1720,19 @@ export function createDiscoveryController({
     scheduleWork(async () => {
       try {
         const entryKeys = new Set(backgroundFiles.map(f => `${f.metadata.model}|||${f.metadata.culture}`));
+        const updates = [];
         for (const key of entryKeys) {
           const entry = state.backgroundIndexing.languageStatus.get(key);
-          if (entry && entry.status !== 'ready') entry.status = 'indexing';
+          if (entry && entry.status !== 'ready') {
+            entry.status = 'indexing';
+            updates.push(entry);
+          }
         }
+        
+        // SPEC-23: Ensure UI and DB catalog are synced before worker start
+        mergeBackgroundPairProgress(updates, 'indexing');
+        queueCatalogProgressFlush();
+        await flushCatalogProgressNow();
         scheduleBackgroundProgressUIUpdate();
 
         const result = await indexFilesWithWorkers(backgroundFiles, false);
