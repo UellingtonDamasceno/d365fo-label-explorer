@@ -11,26 +11,37 @@ let runtimeDbName = null;
 let runtimeDbVersion = null;
 
 // Smart Batching Constants
-const BATCH_SIZE = 1000;          // Increased from 250 to improve write throughput
-const FILE_CONCURRENCY = 3;       // Slightly increased concurrency
-const PROGRESS_INTERVAL = 20;     // Report less frequently to save UI thread time
+const BATCH_SIZE = 2500;          // Balanced size for RAM and postMessage overhead
+const FILE_CONCURRENCY = 4;       // Increased for faster I/O
+const PROGRESS_INTERVAL = 50;     // Report less often to save UI cycles
+const MAX_PENDING_BATCHES = 2;    // Windowed ACK system: allow 2 batches in flight
+
+let pendingBatches = 0;
 
 /**
  * SPEC-23: Request main thread to save batch and await acknowledgement
  */
 async function saveBatchRequest(labels) {
   if (!labels.length) return;
+  
+  // If we have too many pending writes, wait to protect RAM
+  while (pendingBatches >= MAX_PENDING_BATCHES) {
+    await new Promise(r => setTimeout(r, 100));
+  }
+
   const batchId = Date.now() + Math.random();
+  pendingBatches++;
   
   return new Promise((resolve) => {
     const handler = (e) => {
       if (e.data.type === 'DB_WRITE_ACK' && e.data.batchId === batchId) {
         self.removeEventListener('message', handler);
+        pendingBatches--;
         resolve();
       }
     };
     self.addEventListener('message', handler);
-    self.postMessage({ type: 'REQUEST_DB_WRITE', labels, batchId });
+    self.postMessage({ type: 'REQUEST_DB_WRITE', labels, batchId, isUpdate: false });
   });
 }
 
