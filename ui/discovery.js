@@ -1718,7 +1718,12 @@ export function createDiscoveryController({
         
         for (const key of entryKeys) {
           const status = state.backgroundIndexing.languageStatus.get(key);
-          if (status) { status.status = 'ready'; status.processedFiles = status.fileCount; }
+          if (status) { 
+            status.status = 'ready'; 
+            status.processedFiles = status.fileCount;
+            // SPEC-23: Update catalog in DB to persist ready state
+            await db.updateCatalogStatus(key, 'ready', status.labelCount);
+          }
         }
 
         queueCatalogProgressFlush();
@@ -1738,6 +1743,11 @@ export function createDiscoveryController({
         emitIndexingCompleteSync(finalLabelCount, completedAt);
         renderBackgroundSummary();
         renderBackgroundLanguageList();
+        
+        // BUG-24: Force search service to update its ready state
+        if (typeof searchService.initSearch === 'function') {
+          await searchService.initSearch();
+        }
         
         showSuccess(t('background_indexing_complete'));
       } catch (err) {

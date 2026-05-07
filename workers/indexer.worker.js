@@ -11,9 +11,9 @@ let runtimeDbName = null;
 let runtimeDbVersion = null;
 
 // Smart Batching Constants
-const BATCH_SIZE = 250;           // Reduced from 1000 to prevent RAM spikes
-const FILE_CONCURRENCY = 2;       // Reduced to 2 to limit concurrent stream overhead
-const PROGRESS_INTERVAL = 10;     // Report every N files
+const BATCH_SIZE = 1000;          // Increased from 250 to improve write throughput
+const FILE_CONCURRENCY = 3;       // Slightly increased concurrency
+const PROGRESS_INTERVAL = 20;     // Report less frequently to save UI thread time
 
 /**
  * SPEC-23: Request main thread to save batch
