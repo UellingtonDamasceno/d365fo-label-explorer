@@ -11,12 +11,29 @@ let runtimeDbName = null;
 let runtimeDbVersion = null;
 
 // Smart Batching Constants
-const BATCH_SIZE = 2500;          // Balanced size for RAM and postMessage overhead
+const BATCH_SIZE = 10000;         // Increased for direct piping
 const FILE_CONCURRENCY = 4;       // Increased for faster I/O
 const PROGRESS_INTERVAL = 50;     // Report less often to save UI cycles
-const MAX_PENDING_BATCHES = 2;    // Windowed ACK system: allow 2 batches in flight
+const MAX_PENDING_BATCHES = 3;    // Deeper pipeline for direct writes
 
 let pendingBatches = 0;
+const ackWaiters = new Map();
+let dbPort = null;
+
+function setupDbPort(port) {
+  dbPort = port;
+  dbPort.onmessage = (e) => {
+    const { type, batchId } = e.data;
+    if (type === 'DB_WRITE_ACK' && batchId) {
+      const resolve = ackWaiters.get(batchId);
+      if (resolve) {
+        ackWaiters.delete(batchId);
+        pendingBatches--;
+        resolve();
+      }
+    }
+  };
+}
 
 /**
  * SPEC-23: Request main thread to save batch and await acknowledgement
@@ -24,24 +41,24 @@ let pendingBatches = 0;
 async function saveBatchRequest(labels) {
   if (!labels.length) return;
   
-  // If we have too many pending writes, wait to protect RAM
+  // Throttle to protect RAM
   while (pendingBatches >= MAX_PENDING_BATCHES) {
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 50));
   }
 
-  const batchId = Date.now() + Math.random();
+  const batchId = Math.random().toString(36).substring(2);
   pendingBatches++;
   
   return new Promise((resolve) => {
-    const handler = (e) => {
-      if (e.data.type === 'DB_WRITE_ACK' && e.data.batchId === batchId) {
-        self.removeEventListener('message', handler);
-        pendingBatches--;
-        resolve();
-      }
-    };
-    self.addEventListener('message', handler);
-    self.postMessage({ type: 'REQUEST_DB_WRITE', labels, batchId, isUpdate: false });
+    ackWaiters.set(batchId, resolve);
+    
+    if (dbPort) {
+      // Direct pipe - zero overhead for main thread
+      dbPort.postMessage({ type: 'ADD_LABELS', labels, batchId });
+    } else {
+      // Fallback to main thread proxy
+      self.postMessage({ type: 'REQUEST_DB_WRITE', labels, batchId, isUpdate: false });
+    }
   });
 }
 

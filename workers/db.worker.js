@@ -92,13 +92,35 @@ function setupSchema() {
             value JSON,
             PRIMARY KEY (store_name, key)
         );
+
+        CREATE TABLE IF NOT EXISTS kv_blobs (
+            store_name TEXT,
+            key TEXT,
+            value BLOB,
+            PRIMARY KEY (store_name, key)
+        );
         
+        -- Contentless-delete FTS5
         CREATE VIRTUAL TABLE IF NOT EXISTS labels_fts USING fts5(
             id UNINDEXED,
             s,
+            content='labels',
+            content_rowid='id',
             tokenize='unicode61',
             prefix='2 3 4'
         );
+
+        -- Triggers to keep FTS in sync
+        CREATE TRIGGER IF NOT EXISTS labels_ai AFTER INSERT ON labels BEGIN
+            INSERT INTO labels_fts(rowid, id, s) VALUES (new.id, new.id, new.s);
+        END;
+        CREATE TRIGGER IF NOT EXISTS labels_ad AFTER DELETE ON labels BEGIN
+            INSERT INTO labels_fts(labels_fts, rowid, id, s) VALUES ('delete', old.id, old.id, old.s);
+        END;
+        CREATE TRIGGER IF NOT EXISTS labels_au AFTER UPDATE ON labels BEGIN
+            INSERT INTO labels_fts(labels_fts, rowid, id, s) VALUES ('delete', old.id, old.id, old.s);
+            INSERT INTO labels_fts(rowid, id, s) VALUES (new.id, new.id, new.s);
+        END;
     `);
 }
 
