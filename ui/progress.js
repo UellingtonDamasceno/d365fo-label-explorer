@@ -334,7 +334,13 @@ export function createBackgroundProgressController({
           totalLabels: 0,
           isPriority: false,
           firstStartedAt: null,
-          lastEndedAt: null
+          lastEndedAt: null,
+          status: 'waiting',
+          metrics: {
+            readTimeMs: 0,
+            parseTimeMs: 0,
+            persistTimeMs: 0
+          }
         });
       }
 
@@ -351,21 +357,48 @@ export function createBackgroundProgressController({
       if (entry.lastEndedAt && (!group.lastEndedAt || entry.lastEndedAt > group.lastEndedAt)) {
         group.lastEndedAt = entry.lastEndedAt;
       }
+
+      // Aggregate metrics and status
+      if (entry.metrics) {
+        group.metrics.readTimeMs += entry.metrics.readTimeMs || 0;
+        group.metrics.parseTimeMs += entry.metrics.parseTimeMs || 0;
+        group.metrics.persistTimeMs += entry.metrics.persistTimeMs || 0;
+      }
+
+      // Determine most active status for the group
+      const statusHierarchy = { 'error': 5, 'persisting': 4, 'parsing': 3, 'reading': 2, 'indexing': 1, 'waiting': 0, 'ready': -1 };
+      if (statusHierarchy[entry.status] > statusHierarchy[group.status]) {
+        group.status = entry.status;
+      }
     }
 
     return [...cultureGroups.values()]
       .map((group) => {
-        const status = getLanguageAggregateStatus(group.culture);
-        const statusClass = status === 'indexing' ? 'processing' : status;
+        const status = group.status;
+        const statusClass = (status === 'ready' || status === 'waiting') ? status : 'processing';
         
-        // Use standard text icons instead of complex characters if needed, or ensure UTF8
-        const statusIcon = status === 'ready' ? '✓' : status === 'indexing' ? '⌛' : '💤';
+        const statusIcons = {
+          'ready': '✓',
+          'waiting': '💤',
+          'reading': '📥',
+          'parsing': '⚙️',
+          'persisting': '💾',
+          'indexing': '⌛',
+          'error': '❌'
+        };
+        const statusIcon = statusIcons[status] || '⌛';
         
-        const statusTextKey = status === 'ready'
-          ? 'status_ready'
-          : status === 'indexing'
-            ? 'status_processing'
-            : 'status_waiting';
+        const statusTextKeys = {
+          'ready': 'status_ready',
+          'waiting': 'status_waiting',
+          'reading': 'status_reading',
+          'parsing': 'status_parsing',
+          'persisting': 'status_persisting',
+          'indexing': 'status_processing',
+          'error': 'status_error'
+        };
+        const statusTextKey = statusTextKeys[status] || 'status_processing';
+
         const progressPercent = group.totalFiles > 0
           ? Math.min(100, Math.round((group.processedFiles / group.totalFiles) * 100))
           : (status === 'ready' ? 100 : 0);

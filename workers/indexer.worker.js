@@ -16,11 +16,22 @@ const FILE_CONCURRENCY = 3;       // Slightly increased concurrency
 const PROGRESS_INTERVAL = 20;     // Report less frequently to save UI thread time
 
 /**
- * SPEC-23: Request main thread to save batch
+ * SPEC-23: Request main thread to save batch and await acknowledgement
  */
-function saveBatchRequest(labels) {
+async function saveBatchRequest(labels) {
   if (!labels.length) return;
-  self.postMessage({ type: 'REQUEST_DB_WRITE', labels });
+  const batchId = Date.now() + Math.random();
+  
+  return new Promise((resolve) => {
+    const handler = (e) => {
+      if (e.data.type === 'DB_WRITE_ACK' && e.data.batchId === batchId) {
+        self.removeEventListener('message', handler);
+        resolve();
+      }
+    };
+    self.addEventListener('message', handler);
+    self.postMessage({ type: 'REQUEST_DB_WRITE', labels, batchId });
+  });
 }
 
 /**
@@ -61,20 +72,27 @@ async function parseFileLabels(file, metadata, onLabel) {
 /**
  * Process a single file (read + parse)
  */
-async function processFile({ handle, metadata }, onLabel) {
+async function processFile({ handle, metadata }, onLabel, updatePhase) {
   try {
-    const startedAt = Date.now();
     const perfStart = performance.now();
+    
+    // Phase: Reading
+    updatePhase('reading');
+    const readStart = performance.now();
     const file = await handle.getFile();
-    let fileLabelCount = 0;
+    const readTime = performance.now() - readStart;
 
+    // Phase: Parsing
+    updatePhase('parsing');
+    const parseStart = performance.now();
+    let fileLabelCount = 0;
     await parseFileLabels(file, metadata, (label) => {
       fileLabelCount++;
       onLabel(label);
     });
+    const parseTime = performance.now() - parseStart;
     
-    const durationMs = Math.max(0, performance.now() - perfStart);
-    const endedAt = Date.now();
+    const durationMs = performance.now() - perfStart;
     
     return {
       success: true,
@@ -82,12 +100,12 @@ async function processFile({ handle, metadata }, onLabel) {
       file: metadata.sourcePath,
       model: metadata.model,
       culture: metadata.culture,
-      timing: {
-        startedAt,
-        endedAt,
-        durationMs,
-        sizeBytes: file.size || 0
-      }
+      metrics: {
+        readTimeMs: readTime,
+        parseTimeMs: parseTime,
+        durationMs
+      },
+      sizeBytes: file.size || 0
     };
   } catch (error) {
     return {
@@ -96,7 +114,7 @@ async function processFile({ handle, metadata }, onLabel) {
       file: metadata.sourcePath,
       model: metadata.model,
       culture: metadata.culture,
-      timing: null
+      metrics: null
     };
   }
 }
@@ -117,12 +135,19 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
   const mode = isPriority ? '🚀 PRIORITY' : '📦 BACKGROUND';
   console.log(`👷 Worker ${mode}: ${files.length} files`);
 
-  const flushBatch = () => {
+  const flushBatch = async (entriesToUpdate = []) => {
     if (batchBuffer.length === 0) return;
     const labelsToPersist = batchBuffer;
     totalLabels += labelsToPersist.length;
     batchBuffer = [];
-    saveBatchRequest(labelsToPersist);
+    
+    for (const entry of entriesToUpdate) {
+      if (entry) entry.status = 'persisting';
+    }
+    
+    const dbStart = performance.now();
+    await saveBatchRequest(labelsToPersist);
+    return performance.now() - dbStart;
   };
 
   for (const fileTask of files) {
@@ -137,10 +162,13 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
           fileCount: 0,
           processedFiles: 0,
           labelCount: 0,
-          totalProcessingMs: 0,
-          totalBytes: 0,
-          firstStartedAt: null,
-          lastEndedAt: null,
+          status: 'waiting',
+          metrics: {
+            readTimeMs: 0,
+            parseTimeMs: 0,
+            persistTimeMs: 0,
+            totalBytes: 0
+          },
           bloomFilter: new BloomFilter({ expectedItems: 50000, falsePositiveRate: 0.01 })
         });
       }
@@ -149,12 +177,14 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
   
   for (let i = 0; i < files.length; i += FILE_CONCURRENCY) {
     const chunk = files.slice(i, i + FILE_CONCURRENCY);
-    const results = await Promise.all(chunk.map(task => 
-      processFile(task, (label) => {
+    const chunkEntries = chunk.map(task => pairStats.get(`${task.metadata.model}|||${task.metadata.culture}`));
+
+    const results = await Promise.all(chunk.map((task, idx) => {
+      const pairEntry = chunkEntries[idx];
+      
+      return processFile(task, (label) => {
         batchBuffer.push(label);
         
-        const pairKey = `${label.model}|||${label.culture}`;
-        const pairEntry = pairStats.get(pairKey);
         if (pairEntry) {
           pairEntry.bloomFilter.addText(label.text);
           pairEntry.bloomFilter.addText(label.labelId);
@@ -165,13 +195,16 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
           self.postMessage({ type: 'STREAM_LABELS', labels: [label] });
           streamRemaining--;
         }
-
-        if (batchBuffer.length >= BATCH_SIZE) {
-          flushBatch();
-        }
-      })
-    ));
+      }, (phase) => {
+        if (pairEntry) pairEntry.status = phase;
+      });
+    }));
     
+    let dbWaitTime = 0;
+    if (batchBuffer.length >= BATCH_SIZE) {
+      dbWaitTime = await flushBatch(chunkEntries);
+    }
+
     for (const result of results) {
       processedFiles++;
       const pairKey = `${result.model}|||${result.culture}`;
@@ -184,15 +217,11 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
       if (pairEntry) {
         pairEntry.processedFiles += 1;
         pairEntry.labelCount += result.success ? result.labelCount : 0;
-        if (result.timing) {
-          pairEntry.totalProcessingMs += result.timing.durationMs || 0;
-          pairEntry.totalBytes += result.timing.sizeBytes || 0;
-          if (!pairEntry.firstStartedAt || result.timing.startedAt < pairEntry.firstStartedAt) {
-            pairEntry.firstStartedAt = result.timing.startedAt;
-          }
-          if (!pairEntry.lastEndedAt || result.timing.endedAt > pairEntry.lastEndedAt) {
-            pairEntry.lastEndedAt = result.timing.endedAt;
-          }
+        if (result.metrics) {
+          pairEntry.metrics.readTimeMs += result.metrics.readTimeMs;
+          pairEntry.metrics.parseTimeMs += result.metrics.parseTimeMs;
+          pairEntry.metrics.persistTimeMs += dbWaitTime; // Best effort attribution
+          pairEntry.metrics.totalBytes += result.sizeBytes || 0;
         }
       }
     }
@@ -204,13 +233,12 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
         totalFiles: files.length,
         totalLabels: totalLabels + batchBuffer.length,
         pairProgress: [...pairStats.values()].map(({bloomFilter, ...rest}) => rest),
-        isPriority,
-        phase: 'indexing'
+        isPriority
       });
     }
   }
   
-  flushBatch();
+  await flushBatch([...pairStats.values()]);
   
   console.time('⏱️ Export Search Indices');
   for (const pair of pairStats.values()) {

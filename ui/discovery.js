@@ -1196,7 +1196,14 @@ export function createDiscoveryController({
           
           switch (type) {
             case 'REQUEST_DB_WRITE':
-              db.addLabels(e.data.labels);
+              (async () => {
+                try {
+                  await db.addLabels(e.data.labels);
+                  worker.postMessage({ type: 'DB_WRITE_ACK', batchId: e.data.batchId });
+                } catch (err) {
+                  console.error('Failed to acknowledge DB write:', err);
+                }
+              })();
               break;
 
             case 'REQUEST_BLOOM_SAVE':
@@ -1416,7 +1423,14 @@ export function createDiscoveryController({
           const { type } = e.data;
           switch (type) {
             case 'REQUEST_DB_WRITE':
-              db.addLabels(e.data.labels);
+              (async () => {
+                try {
+                  await db.addLabels(e.data.labels);
+                  worker.postMessage({ type: 'DB_WRITE_ACK', batchId: e.data.batchId });
+                } catch (err) {
+                  console.error('Failed to acknowledge DB write:', err);
+                }
+              })();
               break;
             case 'REQUEST_BLOOM_SAVE':
               db.saveBloomFilter(e.data.model, e.data.culture, e.data.buffer);
