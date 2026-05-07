@@ -70,6 +70,14 @@ async function initSQLite() {
 }
 
 function setupSchema() {
+    // Drop old FTS table if it was created with incorrect content_rowid
+    // This is necessary because VIRTUAL TABLE schemas are persistent.
+    try {
+        db.exec(`DROP TABLE IF EXISTS labels_fts;`);
+    } catch (e) {
+        console.warn('[DB Worker] Could not drop labels_fts (expected if it does not exist):', e);
+    }
+
     db.exec(`
         CREATE TABLE IF NOT EXISTS labels (
             id TEXT PRIMARY KEY,
@@ -105,21 +113,20 @@ function setupSchema() {
             id UNINDEXED,
             s,
             content='labels',
-            content_rowid='id',
             tokenize='unicode61',
             prefix='2 3 4'
         );
 
         -- Triggers to keep FTS in sync
         CREATE TRIGGER IF NOT EXISTS labels_ai AFTER INSERT ON labels BEGIN
-            INSERT INTO labels_fts(rowid, id, s) VALUES (new.id, new.id, new.s);
+            INSERT INTO labels_fts(rowid, id, s) VALUES (new.rowid, new.id, new.s);
         END;
         CREATE TRIGGER IF NOT EXISTS labels_ad AFTER DELETE ON labels BEGIN
-            INSERT INTO labels_fts(labels_fts, rowid, id, s) VALUES ('delete', old.id, old.id, old.s);
+            INSERT INTO labels_fts(labels_fts, rowid, id, s) VALUES ('delete', old.rowid, old.id, old.s);
         END;
         CREATE TRIGGER IF NOT EXISTS labels_au AFTER UPDATE ON labels BEGIN
-            INSERT INTO labels_fts(labels_fts, rowid, id, s) VALUES ('delete', old.id, old.id, old.s);
-            INSERT INTO labels_fts(rowid, id, s) VALUES (new.id, new.id, new.s);
+            INSERT INTO labels_fts(labels_fts, rowid, id, s) VALUES ('delete', old.rowid, old.id, old.s);
+            INSERT INTO labels_fts(rowid, id, s) VALUES (new.rowid, new.id, new.s);
         END;
     `);
 }
