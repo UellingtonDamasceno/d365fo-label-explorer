@@ -36,13 +36,30 @@ export async function getAllLabels() {
 export async function getLabels(filters = {}) {
     let sql = 'SELECT * FROM labels';
     let bind = [];
+    let whereClauses = [];
+    
     if (filters.culture) {
-        sql += ' WHERE culture = ?';
+        whereClauses.push('culture = ?');
         bind.push(filters.culture);
-    } else if (filters.model) {
-        sql += ' WHERE model = ?';
+    }
+    if (filters.model) {
+        whereClauses.push('model = ?');
         bind.push(filters.model);
     }
+    
+    if (whereClauses.length > 0) {
+        sql += ' WHERE ' + whereClauses.join(' AND ');
+    }
+    
+    if (filters.limit) {
+        sql += ' LIMIT ?';
+        bind.push(filters.limit);
+        if (filters.offset) {
+            sql += ' OFFSET ?';
+            bind.push(filters.offset);
+        }
+    }
+    
     const res = await dbWorker.send('EXEC', { sql, bind });
     return res.payload;
 }

@@ -127,6 +127,35 @@ self.onmessage = async (e) => {
       case 'GET_CULTURES':
         result = await requestFromDB('getAllCultures');
         break;
+      case 'BUILD_GLOBAL_FILTER':
+        const filter = new BloomFilter({ expectedItems: 500000, falsePositiveRate: 0.01 });
+        // Fetch all labels in chunks to avoid memory issues
+        let offset = 0;
+        const chunkSize = 10000;
+        let hasMore = true;
+        
+        while (hasMore) {
+          const chunk = await requestFromDB('getLabels', { filters: { limit: chunkSize, offset } });
+          if (chunk.length === 0) {
+            hasMore = false;
+          } else {
+            for (const label of chunk) {
+              filter.addText(label.s || label.text);
+            }
+            offset += chunk.length;
+            if (chunk.length < chunkSize) hasMore = false;
+          }
+        }
+        
+        const buffer = filter.export();
+        await requestFromDB('saveBloomFilter', { model: 'global', culture: 'all', buffer });
+        
+        self.postMessage({
+          type: 'FILTER_BUILT',
+          id,
+          duration: (performance.now() - startTime).toFixed(2)
+        });
+        return; // Already sent response
       default:
         throw new Error(`Unknown search type: ${type}`);
     }
