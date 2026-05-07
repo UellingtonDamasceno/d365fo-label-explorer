@@ -115,6 +115,30 @@ self.onmessage = async (e) => {
 
         let result;
         switch (type) {
+            case 'CONNECT_PIPE':
+                const port = payload.port;
+                port.onmessage = async (pe) => {
+                    const { type: pType, labels, batchId } = pe.data;
+                    if (pType === 'ADD_LABELS') {
+                        try {
+                            db.exec('BEGIN TRANSACTION;');
+                            const stmt = db.prepare(`INSERT OR REPLACE INTO labels VALUES (?,?,?,?,?,?,?,?,?,?)`);
+                            for (const l of labels) {
+                                stmt.bind([l.id, l.fullId, l.labelId, l.text, l.help, l.model, l.culture, l.prefix, l.sourcePath, l.s]);
+                                stmt.step();
+                                stmt.reset();
+                            }
+                            stmt.finalize();
+                            db.exec('COMMIT;');
+                            port.postMessage({ type: 'DB_WRITE_ACK', batchId });
+                        } catch (err) {
+                            db.exec('ROLLBACK;');
+                            console.error('[DB Worker] Pipe error:', err);
+                        }
+                    }
+                };
+                return; // No result message needed for pipe connection
+
             case 'INIT':
                 await initSQLite();
                 result = { status: 'ready', mode: sqlite3.oo1.OpfsDb ? 'opfs' : 'memory' };
@@ -132,34 +156,16 @@ self.onmessage = async (e) => {
             case 'ADD_LABELS':
                 db.exec('BEGIN TRANSACTION;');
                 try {
+                    // With triggers, we only need to insert into the labels table.
+                    // SQLite handles the FTS indexing automatically and efficiently.
                     const stmt = db.prepare(`INSERT OR REPLACE INTO labels VALUES (?,?,?,?,?,?,?,?,?,?)`);
-                    const ftsStmt = db.prepare(`INSERT INTO labels_fts(id, s) VALUES (?,?)`);
-                    
-                    // Only prepare delete if specifically requested (for updates)
-                    // For fresh indexing, we skip this to save 30% time
-                    const shouldDeleteFTS = payload.isUpdate === true;
-                    const ftsDelStmt = shouldDeleteFTS ? db.prepare(`DELETE FROM labels_fts WHERE id = ?`) : null;
 
                     for (const l of payload.labels) {
                         stmt.bind([l.id, l.fullId, l.labelId, l.text, l.help, l.model, l.culture, l.prefix, l.sourcePath, l.s]);
                         stmt.step();
                         stmt.reset();
-
-                        if (shouldDeleteFTS) {
-                            ftsDelStmt.bind([l.id]);
-                            ftsDelStmt.step();
-                            ftsDelStmt.reset();
-                        }
-
-                        if (l.s) {
-                            ftsStmt.bind([l.id, l.s]);
-                            ftsStmt.step();
-                            ftsStmt.reset();
-                        }
                     }
                     stmt.finalize(); 
-                    ftsStmt.finalize(); 
-                    if (ftsDelStmt) ftsDelStmt.finalize();
                     db.exec('COMMIT;');
                     result = { count: payload.labels.length };
                 } catch (err) {
@@ -169,13 +175,33 @@ self.onmessage = async (e) => {
                 break;
 
             case 'SEARCH_FTS':
+                // Join is required for contentless-delete tables to get original columns
                 result = db.exec({
-                    sql: `SELECT labels.* FROM labels_fts JOIN labels ON labels.id = labels_fts.id 
+                    sql: `SELECT labels.* FROM labels_fts 
+                          JOIN labels ON labels.id = labels_fts.rowid 
                           WHERE labels_fts MATCH ? ORDER BY rank LIMIT ? OFFSET ?`,
                     bind: [payload.query, payload.limit || 50, payload.offset || 0],
                     rowMode: 'object',
                     returnValue: 'resultRows'
                 });
+                break;
+
+            case 'KV_GET_BLOB':
+                const blobRows = db.exec({
+                    sql: 'SELECT value FROM kv_blobs WHERE store_name = ? AND key = ?',
+                    bind: [payload.store, payload.key],
+                    rowMode: 'array',
+                    returnValue: 'resultRows'
+                });
+                result = blobRows.length ? blobRows[0][0] : null;
+                break;
+
+            case 'KV_PUT_BLOB':
+                db.exec({
+                    sql: 'INSERT OR REPLACE INTO kv_blobs (store_name, key, value) VALUES (?, ?, ?)',
+                    bind: [payload.store, payload.key, payload.value]
+                });
+                result = { success: true };
                 break;
 
             case 'KV_GET':

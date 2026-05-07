@@ -285,7 +285,21 @@ async function processFilesWithHandles(files, isPriority = false, streamOptions 
 }
 
 self.onmessage = async function(event) {
-  const { type, files, isPriority, streamLabels, streamLimit, dbName, dbVersion } = event.data;
+  const { type, files, isPriority, streamLabels, streamLimit, dbName, dbVersion, port } = event.data;
+
+  if (port) {
+    setupDbPort(port);
+  }
+
+  if (type === 'DB_WRITE_ACK') {
+    const resolve = ackWaiters.get(event.data.batchId);
+    if (resolve) {
+      ackWaiters.delete(event.data.batchId);
+      pendingBatches--;
+      resolve();
+    }
+    return;
+  }
 
   if (dbName && dbName !== runtimeDbName) runtimeDbName = dbName;
   if (typeof dbVersion === 'number' && dbVersion !== runtimeDbVersion) runtimeDbVersion = dbVersion;

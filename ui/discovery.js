@@ -1401,12 +1401,17 @@ export function createDiscoveryController({
         { type: 'module' }
       );
 
-      // Pass DB config first
+      // TURBO INGESTION: Direct Pipe to DB Worker
+      const channel = new MessageChannel();
+      dbWorker.postMessage({ type: 'CONNECT_PIPE', port: channel.port1 }, [channel.port1]);
+
+      // Pass DB config and PIPE port
       worker.postMessage({
         type: 'INIT_DB',
         dbName: DB_NAME,
-        dbVersion: DB_VERSION
-      });
+        dbVersion: DB_VERSION,
+        port: channel.port2
+      }, [channel.port2]);
 
       const releaseWorkerSlot = reserveIndexerWorkerSlot();
       const terminateWorker = () => {

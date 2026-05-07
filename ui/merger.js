@@ -375,13 +375,15 @@ export function createMergerController({
     const elements = getElements();
     if (!elements.mergerPreviewContent || !state.mergeResult) return;
 
+    const normalize = (val) => String(val || '').replace(/\r?\n/g, ' ');
     const finalLabels = buildFinalLabels(state.mergeResult, state.resolvedConflicts);
-    const previewLines = finalLabels.slice(0, 50).map((label) => {
-      let line = `${label.id}=${String(label.text || '').replace(/;/g, ';;')}`;
+    const previewLines = [];
+    
+    finalLabels.slice(0, 50).forEach((label) => {
+      previewLines.push(`${label.id}=${normalize(label.text)}`);
       if (label.helpText) {
-        line += `;${String(label.helpText).replace(/;/g, ';;')}`;
+        previewLines.push(` ;${normalize(label.helpText).trim()}`);
       }
-      return line;
     });
 
     if (finalLabels.length > 50) {
@@ -394,13 +396,15 @@ export function createMergerController({
   function handleMergerDownload() {
     if (!state.mergeResult) return;
 
+    const normalize = (val) => String(val || '').replace(/\r?\n/g, ' ');
     const finalLabels = buildFinalLabels(state.mergeResult, state.resolvedConflicts);
-    const lines = finalLabels.map((label) => {
-      let line = `${label.id}=${String(label.text || '').replace(/;/g, ';;')}`;
+    const lines = [];
+    
+    finalLabels.forEach((label) => {
+      lines.push(`${label.id}=${normalize(label.text)}`);
       if (label.helpText) {
-        line += `;${String(label.helpText).replace(/;/g, ';;')}`;
+        lines.push(` ;${normalize(label.helpText).trim()}`);
       }
-      return line;
     });
 
     const content = lines.join('\n');

@@ -28,7 +28,7 @@
 
       if (line.charCodeAt(0) === 32 && line.charCodeAt(1) === 59) {
         if (currentLabel) {
-          const helpText = line.slice(2).trim();
+          const helpText = line.slice(2).trim().replace(/;;/g, ';');
           if (helpText) {
             currentLabel.help = currentLabel.help
               ? `${currentLabel.help} ${helpText}`
@@ -46,7 +46,7 @@
       const equalsIndex = line.indexOf('=');
       if (equalsIndex > 0 && line.charCodeAt(0) !== 32) {
         const labelId = line.slice(0, equalsIndex);
-        const text = line.slice(equalsIndex + 1);
+        const text = line.slice(equalsIndex + 1).replace(/;;/g, ';');
         if (!labelId.trim()) return;
 
         const labelKey = model || culture || prefix
@@ -110,7 +110,7 @@
 
       if (line.charCodeAt(0) === 32 && line.charCodeAt(1) === 59) {
         if (currentLabel) {
-          const helpText = line.slice(2).trim();
+          const helpText = line.slice(2).trim().replace(/;;/g, ';');
           if (helpText) {
             currentLabel.help = currentLabel.help
               ? `${currentLabel.help} ${helpText}`
@@ -128,7 +128,7 @@
       const equalsIndex = line.indexOf('=');
       if (equalsIndex > 0 && line.charCodeAt(0) !== 32) {
         const labelId = line.slice(0, equalsIndex);
-        const text = line.slice(equalsIndex + 1);
+        const text = line.slice(equalsIndex + 1).replace(/;;/g, ';');
         if (!labelId.trim()) continue;
 
         const labelKey = model || culture || prefix
@@ -158,12 +158,14 @@
 
   function serializeLabelFile(labels) {
     const lines = [];
+    const normalize = (val) => String(val || '').replace(/\r?\n/g, ' ');
+    
     for (const label of labels || []) {
       const labelId = label.labelId || label.id || '';
-      lines.push(`${labelId}=${label.text || ''}`);
+      lines.push(`${labelId}=${normalize(label.text)}`);
       const help = label.help || label.helpText || '';
       if (help && String(help).trim()) {
-        lines.push(` ;${String(help).trim()}`);
+        lines.push(` ;${normalize(help).trim()}`);
       }
     }
     return lines.join('\n');

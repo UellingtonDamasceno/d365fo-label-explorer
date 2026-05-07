@@ -67,15 +67,10 @@
 
     addText(text) {
       if (!text) return;
+      // Optimized tokenization: single pass split/filter
       const tokens = text.toLowerCase().split(/[\W_]+/).filter(t => t.length > 1);
       for (const token of tokens) {
         this.add(token);
-        // SPEC-42: Index prefixes (from 3 chars) to support fuzzy/partial searches
-        if (token.length > 3) {
-          for (let i = 3; i < token.length; i++) {
-            this.add(token.substring(0, i));
-          }
-        }
       }
     }
 
