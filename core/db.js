@@ -9,12 +9,20 @@ export { DB_NAME, DB_VERSION };
 
 const dbWorker = new ManagedWorker(new URL('../workers/db.worker.js', import.meta.url).href, { type: 'module' });
 
+function normalizeFilterList(value) {
+    const arr = Array.isArray(value) ? value : (value ? [value] : []);
+    return [...new Set(arr.map(v => String(v || '').trim()).filter(Boolean))];
+}
+
 export async function initDB() {
     const res = await dbWorker.send('INIT');
     return res.payload;
 }
 
 export function getWorker() {
+    if (!dbWorker.worker) {
+        dbWorker.start();
+    }
     return dbWorker.worker;
 }
 
@@ -177,16 +185,45 @@ export async function updateCatalogProgress(id, processedFiles, labelCount = nul
     }
 }
 
-export async function updateCatalogProgressBatch(updates = []) {
+async function updateCatalogProgressFallback(updates = []) {
     if (!Array.isArray(updates) || updates.length === 0) return 0;
     let applied = 0;
     for (const update of updates) {
         const id = update?.id;
         if (!id) continue;
-        await updateCatalogProgress(id, update.processedFiles, update.labelCount, update.metrics);
-        applied++;
+        try {
+            await updateCatalogProgress(id, update.processedFiles, update.labelCount, update.metrics);
+            applied++;
+        } catch (err) {
+            console.warn('Failed to update catalog progress for', id, err);
+        }
     }
     return applied;
+}
+
+export async function updateCatalogProgressBulk(updates = []) {
+    if (!Array.isArray(updates) || updates.length === 0) return 0;
+    const payload = updates
+        .filter(update => update?.id)
+        .map(update => ({
+            id: update.id,
+            processedFiles: update.processedFiles,
+            labelCount: update.labelCount ?? null,
+            metrics: update.metrics ?? null
+        }));
+    if (payload.length === 0) return 0;
+
+    const res = await dbWorker.send('CATALOG_BULK_PROGRESS', { updates: payload });
+    return Number(res?.payload?.applied || 0);
+}
+
+export async function updateCatalogProgressBatch(updates = []) {
+    try {
+        return await updateCatalogProgressBulk(updates);
+    } catch (err) {
+        console.warn('Catalog bulk update failed. Falling back to per-entry progress updates.', err);
+        return updateCatalogProgressFallback(updates);
+    }
 }
 
 export async function getCatalog() {
@@ -234,6 +271,27 @@ export async function getBuilderSessions() {
 export async function hasData() {
     const count = await getLabelCount();
     return count > 0;
+}
+
+export async function searchLabels(options = {}) {
+    const {
+        query = '',
+        exactMatch = false,
+        limit = 100,
+        offset = 0,
+        cultures = [],
+        models = []
+    } = options;
+
+    const res = await dbWorker.send('SEARCH_LABELS', {
+        query: String(query || ''),
+        exactMatch: !!exactMatch,
+        limit,
+        offset,
+        cultures: normalizeFilterList(cultures),
+        models: normalizeFilterList(models)
+    });
+    return res.payload;
 }
 
 export async function searchFTS(query, limit = 50, offset = 0) {

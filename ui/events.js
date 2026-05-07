@@ -51,8 +51,26 @@ export function createEventController(deps) {
     // SPEC-41: Background Tasks button opens progress modal
     elements.btnBackgroundTasks?.addEventListener('click', deps.openBackgroundProgressModal);
     
-    // Search
-    const debouncedSearch = debounce(deps.handleSearch, 300);
+    // Search (adaptive debounce: shorter terms wait longer)
+    let searchTimer = null;
+    const resolveSearchDebounceMs = (rawQuery) => {
+      const len = String(rawQuery || '').trim().length;
+      if (len <= 1) return 900;
+      if (len <= 3) return 500;
+      return 300;
+    };
+
+    const scheduleSearch = (rawQuery) => {
+      if (searchTimer) {
+        clearTimeout(searchTimer);
+        searchTimer = null;
+      }
+      searchTimer = setTimeout(() => {
+        searchTimer = null;
+        deps.handleSearch();
+      }, resolveSearchDebounceMs(rawQuery));
+    };
+
     elements.searchInput?.addEventListener('input', (e) => {
       state.currentQuery = e.target.value;
       elements.clearSearch.classList.toggle('hidden', !state.currentQuery);
@@ -61,10 +79,14 @@ export function createEventController(deps) {
         cultures: [...(state.filters?.cultures || [])],
         models: [...(state.filters?.models || [])]
       });
-      debouncedSearch();
+      scheduleSearch(state.currentQuery);
     });
     
     elements.clearSearch?.addEventListener('click', () => {
+      if (searchTimer) {
+        clearTimeout(searchTimer);
+        searchTimer = null;
+      }
       elements.searchInput.value = '';
       state.currentQuery = '';
       elements.clearSearch.classList.add('hidden');

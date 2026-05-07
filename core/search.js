@@ -12,6 +12,7 @@
 
 import { DB_NAME, DB_VERSION } from './db-constants.js';
 import { FLAGS } from '../utils/flags.js';
+import { createTelemetryTimer, bucketQueryLength } from '../utils/telemetry.js';
 import { labelCache } from './opfs-cache.js';
 import * as db from './db.js';
 
@@ -186,11 +187,13 @@ function initSearchWorker() {
               const { requestType, payload: requestPayload } = e.data;
               let dbResult;
               
-              if (requestType === 'searchFTS') {
-                  dbResult = await db.searchFTS(requestPayload.query, requestPayload.limit, requestPayload.offset);
-              } else if (requestType === 'getLabels') {
-                  dbResult = await db.getLabels(requestPayload.filters);
-              } else {
+               if (requestType === 'searchFTS') {
+                   dbResult = await db.searchFTS(requestPayload.query, requestPayload.limit, requestPayload.offset);
+               } else if (requestType === 'searchLabels') {
+                   dbResult = await db.searchLabels(requestPayload);
+               } else if (requestType === 'getLabels') {
+                   dbResult = await db.getLabels(requestPayload.filters);
+               } else {
                   dbResult = await db[requestType]();
               }
               
@@ -395,19 +398,30 @@ export async function search(query, options = {}) {
   const { exactMatch = false, model, limit = 100, offset = 0 } = options;
   const cultures = normalizeFilterArray(options.cultures || options.culture);
   const models = normalizeFilterArray(options.models || model);
-  const singleModel = models.length === 1 ? models[0] : null;
   
-  const startMark = performance.now();
-  const queryDesc = query ? `"${query}"` : 'ALL';
-  const cultureDesc = cultures.length > 0 ? cultures.join(',') : 'Any';
+  const queryText = String(query || '');
   const cacheKey = buildQueryCacheKey(query, { ...options, cultures, models, limit, offset, exactMatch });
   const canUseL1Cache = FLAGS.USE_L1_SEARCH_CACHE && !!query && !exactMatch;
-  
-  console.log(`[Search Start] Query: ${queryDesc} | Exact: ${exactMatch} | Cultures: ${cultureDesc} | Limit: ${limit}`);
+  const telemetry = createTelemetryTimer('search.query', {
+    queryLength: queryText.length,
+    queryLengthBucket: bucketQueryLength(queryText.length),
+    exactMatch: !!exactMatch,
+    cultureCount: cultures.length,
+    modelCount: models.length,
+    limit,
+    offset
+  });
 
   if (canUseL1Cache) {
     const cached = getCachedQuery(cacheKey);
-    if (cached) return cached;
+    if (cached) {
+      telemetry.end({
+        status: 'ok',
+        cacheHit: true,
+        resultCount: cached.length
+      });
+      return cached;
+    }
   }
 
   let result = [];
@@ -415,12 +429,21 @@ export async function search(query, options = {}) {
     // Always use searchIndexedDB (FTS) for all levels
     result = await searchIndexedDB(query, { ...options, cultures, models, exactMatch });
   } catch (err) {
-    if (err.name === 'AbortError') return [];
+    if (err.name === 'AbortError') {
+      telemetry.end({ status: 'aborted', resultCount: 0 });
+      return [];
+    }
+    telemetry.end({
+      status: 'error',
+      error: err?.message || String(err)
+    });
     throw err;
   }
-
-  const duration = (performance.now() - startMark).toFixed(2);
-  console.log(`[Search End] Returned ${result.length} items in ${duration}ms`);
+  telemetry.end({
+    status: 'ok',
+    cacheHit: false,
+    resultCount: result.length
+  });
   
   if (canUseL1Cache) {
     setCachedQuery(cacheKey, result);
@@ -449,40 +472,17 @@ async function searchIndexedDBMainThread(query, options = {}) {
   const { culture, model, limit = 100, offset = 0, exactMatch = false } = options;
   const cultures = normalizeFilterArray(options.cultures || culture);
   const models = normalizeFilterArray(options.models || model);
-  const lowerQuery = query?.toLowerCase() || '';
+  const lowerQuery = String(query || '').toLowerCase();
   
   try {
-    if (lowerQuery && !exactMatch && lowerQuery.length > 2) {
-      let results = await db.searchFTS(lowerQuery, limit, offset);
-      if (models.length > 0 || cultures.length > 0) {
-        results = results.filter(l => {
-          if (models.length > 0 && !models.includes(l.model)) return false;
-          if (cultures.length > 0 && !cultures.includes(l.culture)) return false;
-          return true;
-        });
-      }
-      return results;
-    }
-
-    const filter = {};
-    if (cultures.length === 1) filter.culture = cultures[0];
-    else if (models.length === 1) filter.model = models[0];
-    
-    let results = await db.getLabels(filter);
-    results = results.filter(label => {
-      if (models.length > 1 && !models.includes(label.model)) return false;
-      if (cultures.length > 1 && !cultures.includes(label.culture)) return false;
-      if (lowerQuery) {
-        if (exactMatch) {
-          return label.text?.toLowerCase() === lowerQuery || label.labelId?.toLowerCase() === lowerQuery;
-        } else {
-          return label.text?.toLowerCase().includes(lowerQuery) || label.labelId?.toLowerCase().includes(lowerQuery);
-        }
-      }
-      return true;
+    return await db.searchLabels({
+      query: lowerQuery,
+      exactMatch,
+      limit,
+      offset,
+      cultures,
+      models
     });
-
-    return results.slice(offset, offset + limit);
   } catch (err) {
     console.error('[Search] Main thread search failed:', err);
     return [];

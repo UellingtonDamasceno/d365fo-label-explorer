@@ -107,6 +107,7 @@ export function cacheDomElements() {
     settingHybridSearch: document.getElementById('setting-hybrid-search'),
     settingMaxModels: document.getElementById('setting-max-models'),
     settingFuzzyThreshold: document.getElementById('setting-fuzzy-threshold'),
+    settingEmptyQueryMode: document.getElementById('setting-empty-query-mode'),
     fuzzyThresholdValue: document.getElementById('fuzzy-threshold-value'),
 
     // Generic Selector Modal

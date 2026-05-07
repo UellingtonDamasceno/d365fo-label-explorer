@@ -188,6 +188,27 @@ export function createSearchUIController({
     if (isLoadMore && !state.searchPagination.hasMore) return;
 
     const query = state.currentQuery.trim();
+    const emptyQueryMode = state.displaySettings.emptyQueryMode === 'keep-last' ? 'keep-last' : 'none';
+
+    if (!query) {
+      state.searchPagination.offset = 0;
+      state.searchPagination.hasMore = false;
+
+      if (emptyQueryMode === 'keep-last' && state.groupedResults.length > 0) {
+        if (elements.searchInfo) elements.searchInfo.textContent = 'Showing previous search results';
+        if (elements.resultsCount) elements.resultsCount.textContent = state.groupedResults.length.toLocaleString();
+        renderVirtualScroll();
+        return;
+      }
+
+      state.results = [];
+      state.groupedResults = [];
+      if (elements.resultsViewport) elements.resultsViewport.scrollTop = 0;
+      if (elements.resultsCount) elements.resultsCount.textContent = '0';
+      if (elements.searchInfo) elements.searchInfo.textContent = '';
+      showEmptyState();
+      return;
+    }
     
     if (!isLoadMore) {
       state.searchPagination.offset = 0;
@@ -219,13 +240,6 @@ export function createSearchUIController({
       }
       
       let newResults = await searchService.search(query, filterOptions);
-      
-      if (state.filters.cultures.length > 0) {
-        newResults = newResults.filter(l => state.filters.cultures.includes(l.culture));
-      }
-      if (state.filters.models.length > 0) {
-        newResults = newResults.filter(l => state.filters.models.includes(l.model));
-      }
       
       if (newResults.length < state.searchPagination.limit) {
         state.searchPagination.hasMore = false;

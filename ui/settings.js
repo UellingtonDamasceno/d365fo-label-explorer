@@ -31,6 +31,9 @@ export function createSettingsController({
     if (elements.settingDirectSaveMode) {
       elements.settingDirectSaveMode.checked = !!state.displaySettings.builderDirectSaveMode;
     }
+    if (elements.settingEmptyQueryMode) {
+      elements.settingEmptyQueryMode.value = state.displaySettings.emptyQueryMode || 'none';
+    }
     if (elements.settingAiEnabled) {
       elements.settingAiEnabled.checked = !!state.ai.enabled;
     }
@@ -85,6 +88,7 @@ export function createSettingsController({
     state.displaySettings.groupDuplicates = elements.modalGroupDuplicates?.checked || false;
     state.displaySettings.uiLanguage = elements.uiLanguageSelect?.value || 'auto';
     state.displaySettings.builderDirectSaveMode = elements.settingDirectSaveMode?.checked || false;
+    state.displaySettings.emptyQueryMode = elements.settingEmptyQueryMode?.value || 'none';
     state.ai.enabled = elements.settingAiEnabled?.checked || false;
     state.ai.semanticIdSuggestion = elements.settingAiSemanticId?.checked || false;
     state.ai.autoTranslateOnDiscovery = elements.settingAiAutoTranslate?.checked || false;

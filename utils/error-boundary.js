@@ -56,6 +56,10 @@ export class ManagedWorker {
     return this._worker !== null;
   }
 
+  get worker() {
+    return this._worker;
+  }
+
   start() {
     if (this._worker) return this;
     this._worker = new Worker(this._url, this._options);

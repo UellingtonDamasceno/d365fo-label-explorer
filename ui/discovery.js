@@ -1,4 +1,5 @@
 import { DB_NAME, DB_VERSION } from '../core/db-constants.js';
+import { createTelemetryTimer } from '../utils/telemetry.js';
 
 function createElementsProxy(getElements) {
   return new Proxy({}, {
@@ -206,10 +207,16 @@ export function createDiscoveryController({
     // Show progress
     elements.btnSelectFolder?.classList.add('hidden');
     elements.scanProgress?.classList.remove('hidden');
+    const discoveryTelemetry = createTelemetryTimer('discovery.scan', {
+      folderName: state.directoryHandle?.name || 'unknown'
+    });
+    let discoveredModels = 0;
+    let discoveredFiles = 0;
+    let discoveryStatus = 'ok';
     
     try {
       // Discover label files
-      setState('discoveryData', await fileAccess.discoverLabelFiles(
+      const discoveryData = await fileAccess.discoverLabelFiles(
         state.directoryHandle,
         (progress) => {
           if (elements.scanStatus) {
@@ -219,11 +226,15 @@ export function createDiscoveryController({
             }) || `Scanning... Found ${progress.foundModels} models (${progress.scannedDirs} directories scanned)`;
           }
         }
-      ));
+      );
+      setState('discoveryData', discoveryData);
+      discoveredModels = discoveryData.length;
+      discoveredFiles = discoveryData.reduce((sum, model) => sum + (model.fileCount || 0), 0);
       
       console.log('📊 Discovery complete:', state.discoveryData);
       
       if (state.discoveryData.length === 0) {
+        discoveryStatus = 'empty';
         showError(t('error_no_labels') || 'No D365FO label files found. Make sure you selected the correct folder.');
         elements.btnSelectFolder?.classList.remove('hidden');
         elements.scanProgress?.classList.add('hidden');
@@ -233,10 +244,17 @@ export function createDiscoveryController({
       // Show dashboard
       showDiscoveryDashboard();
     } catch (err) {
+      discoveryStatus = 'error';
       console.error('Discovery error:', err);
       showError(t('error_scan_failed') || 'Failed to scan folder. Please try again.');
       elements.btnSelectFolder?.classList.remove('hidden');
       elements.scanProgress?.classList.add('hidden');
+    } finally {
+      discoveryTelemetry.end({
+        status: discoveryStatus,
+        modelCount: discoveredModels,
+        fileCount: discoveredFiles
+      });
     }
   }
 
@@ -953,6 +971,11 @@ export function createDiscoveryController({
   async function indexFilesOnMainThread(fileTasks, isPriority = false, options = {}) {
     const startTime = performance.now();
     const totalFiles = fileTasks.length;
+    const indexingTelemetry = createTelemetryTimer('indexing.run', {
+      mode: isPriority ? 'priority' : 'background',
+      execution: 'main-thread',
+      totalFiles
+    });
     const streamLabels = Boolean(options.streamLabels);
     const BATCH_SIZE_MAIN = 1000;
     let streamRemaining = streamLabels
@@ -1103,6 +1126,14 @@ export function createDiscoveryController({
 
     const elapsed = (performance.now() - startTime) / 1000;
     console.log(`✅ ${isPriority ? 'PRIORITY' : 'BACKGROUND'} (main thread) complete: ${totalLabels} labels in ${elapsed.toFixed(1)}s`);
+    indexingTelemetry.end({
+      status: errors.length > 0 ? 'partial' : 'ok',
+      processedFiles,
+      totalLabels,
+      errorCount: errors.length,
+      labelsPerSecond: elapsed > 0 ? Number((totalLabels / elapsed).toFixed(2)) : 0,
+      filesPerSecond: elapsed > 0 ? Number((processedFiles / elapsed).toFixed(2)) : 0
+    });
 
     await flushCatalogProgressNow();
     await db.setMetadata('lastIndexed', Date.now());
@@ -1131,6 +1162,12 @@ export function createDiscoveryController({
     if (workerCount <= 0) {
       return { totalLabels: 0, processedFiles: 0, errors: [] };
     }
+    const indexingTelemetry = createTelemetryTimer('indexing.run', {
+      mode: isPriority ? 'priority' : 'background',
+      execution: 'worker-pool',
+      totalFiles,
+      workerCount
+    });
     
     console.log(`🚀 ${isPriority ? 'PRIORITY' : 'BACKGROUND'} INDEXING: ${workerCount} workers for ${totalFiles} files`);
     
@@ -1138,6 +1175,7 @@ export function createDiscoveryController({
     const streamLimitPerWorker = streamLabels
       ? Math.max(0, Math.floor((options.streamLimit || state.realtimeStreaming.maxLabels) / Math.max(1, workerCount)))
       : 0;
+    const dbWorker = db.getWorker();
     const workers = [];
     const workerPromises = [];
     const workerStats = new Map();
@@ -1179,12 +1217,17 @@ export function createDiscoveryController({
         { type: 'module' }
       );
 
-      // Pass DB config first
+      // Direct pipe to DB worker for lower write overhead
+      const channel = new MessageChannel();
+      dbWorker.postMessage({ type: 'CONNECT_PIPE', port: channel.port1 }, [channel.port1]);
+
+      // Pass DB config first (plus pipe)
       worker.postMessage({
         type: 'INIT_DB',
         dbName: DB_NAME,
-        dbVersion: DB_VERSION
-      });
+        dbVersion: DB_VERSION,
+        port: channel.port2
+      }, [channel.port2]);
 
       const releaseWorkerSlot = reserveIndexerWorkerSlot();
       const terminateWorker = () => {
@@ -1304,11 +1347,29 @@ export function createDiscoveryController({
       console.error('Indexing error:', err);
       showError(t('toast_indexing_error') || 'Indexing failed');
       workers.forEach(({ terminateWorker }) => terminateWorker());
+      const elapsedError = (performance.now() - startTime) / 1000;
+      indexingTelemetry.end({
+        status: 'error',
+        processedFiles,
+        totalLabels,
+        errorCount: errors.length,
+        error: err?.message || String(err),
+        labelsPerSecond: elapsedError > 0 ? Number((totalLabels / elapsedError).toFixed(2)) : 0,
+        filesPerSecond: elapsedError > 0 ? Number((processedFiles / elapsedError).toFixed(2)) : 0
+      });
       return { totalLabels: 0, processedFiles: 0, errors };
     }
     
     const elapsed = (performance.now() - startTime) / 1000;
     console.log(`✅ ${isPriority ? 'PRIORITY' : 'BACKGROUND'} complete: ${totalLabels} labels in ${elapsed.toFixed(1)}s`);
+    indexingTelemetry.end({
+      status: errors.length > 0 ? 'partial' : 'ok',
+      processedFiles,
+      totalLabels,
+      errorCount: errors.length,
+      labelsPerSecond: elapsed > 0 ? Number((totalLabels / elapsed).toFixed(2)) : 0,
+      filesPerSecond: elapsed > 0 ? Number((processedFiles / elapsed).toFixed(2)) : 0
+    });
 
     await flushCatalogProgressNow();
     const now = Date.now();
@@ -1360,6 +1421,12 @@ export function createDiscoveryController({
     
     const workerCount = resolveWorkerCount('full', totalFiles);
     console.log(`🚀 SPEC-18 TURBO INGESTION: ${workerCount} workers for ${totalFiles} files`);
+    const indexingTelemetry = createTelemetryTimer('indexing.run', {
+      mode: 'full',
+      execution: 'worker-pool',
+      totalFiles,
+      workerCount
+    });
     
     function updateProgress() {
       const progress = Math.round((processedFiles / totalFiles) * 100);
@@ -1391,6 +1458,7 @@ export function createDiscoveryController({
     }
     
     const workers = [];
+    const dbWorker = db.getWorker();
     for (let i = 0; i < workerCount; i++) {
       const worker = new Worker(
         new URL('../workers/indexer.worker.js', import.meta.url),
@@ -1483,6 +1551,16 @@ export function createDiscoveryController({
       console.error('Indexing error:', err);
       showError(t('toast_indexing_error') || 'Indexing failed');
       workers.forEach(({ terminateWorker }) => terminateWorker());
+      const elapsedError = (performance.now() - startTime) / 1000;
+      indexingTelemetry.end({
+        status: 'error',
+        processedFiles,
+        totalLabels,
+        errorCount: errors.length,
+        error: err?.message || String(err),
+        labelsPerSecond: elapsedError > 0 ? Number((totalLabels / elapsedError).toFixed(2)) : 0,
+        filesPerSecond: elapsedError > 0 ? Number((processedFiles / elapsedError).toFixed(2)) : 0
+      });
       return;
     }
     
@@ -1500,6 +1578,15 @@ export function createDiscoveryController({
     searchService.invalidateSearchCache();
     emitIndexingCompleteSync(totalLabels, indexedAt);
     releaseIndexedFileHandlesIfPossible();
+    const elapsed = (performance.now() - startTime) / 1000;
+    indexingTelemetry.end({
+      status: errors.length > 0 ? 'partial' : 'ok',
+      processedFiles,
+      totalLabels,
+      errorCount: errors.length,
+      labelsPerSecond: elapsed > 0 ? Number((totalLabels / elapsed).toFixed(2)) : 0,
+      filesPerSecond: elapsed > 0 ? Number((processedFiles / elapsed).toFixed(2)) : 0
+    });
     
     if (errors.length > 0) {
       showInfo(t('toast_indexing_skipped', { count: errors.length }));

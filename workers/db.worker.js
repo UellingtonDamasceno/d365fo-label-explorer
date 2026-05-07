@@ -111,6 +111,8 @@ function setupSchema() {
         );
         CREATE INDEX IF NOT EXISTS idx_labels_culture ON labels(culture);
         CREATE INDEX IF NOT EXISTS idx_labels_model ON labels(model);
+        CREATE INDEX IF NOT EXISTS idx_labels_labelId_nocase ON labels(labelId COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_labels_text_nocase ON labels(text COLLATE NOCASE);
         
         CREATE TABLE IF NOT EXISTS kv_store (
             store_name TEXT,
@@ -161,6 +163,76 @@ function setupSchema() {
             console.error('[DB Worker] FTS repopulation failed:', e);
         }
     }
+}
+
+function toDistinctStringList(value) {
+    const arr = Array.isArray(value) ? value : (value ? [value] : []);
+    return [...new Set(arr.map(v => String(v || '').trim()).filter(Boolean))];
+}
+
+function buildInClause(column, values, bind) {
+    if (!Array.isArray(values) || values.length === 0) return null;
+    const placeholders = values.map(() => '?').join(', ');
+    bind.push(...values);
+    return `${column} IN (${placeholders})`;
+}
+
+function buildSearchLabelsQuery(payload = {}) {
+    const rawQuery = String(payload.query || '').trim();
+    const lowerQuery = rawQuery.toLowerCase();
+    const exactMatch = !!payload.exactMatch;
+    const limit = Math.min(500, Math.max(1, Number(payload.limit) || 100));
+    const offset = Math.max(0, Number(payload.offset) || 0);
+    const cultures = toDistinctStringList(payload.cultures);
+    const models = toDistinctStringList(payload.models);
+
+    let mode = !lowerQuery ? 'all' : (exactMatch ? 'exact' : (lowerQuery.length > 2 ? 'fts' : 'like'));
+    let ftsQuery = '';
+
+    if (mode === 'fts') {
+        const sanitized = lowerQuery.replace(/[^\w\s*]/g, ' ').trim();
+        const tokens = sanitized.split(/\s+/).filter(Boolean);
+        if (tokens.length === 0) {
+            mode = 'like';
+        } else {
+            ftsQuery = tokens.map(t => `${t}*`).join(' AND ');
+        }
+    }
+
+    const bind = [];
+    const where = [];
+    let sql = mode === 'fts'
+        ? `SELECT labels.* FROM labels_fts
+           JOIN labels ON labels.rowid = labels_fts.rowid`
+        : 'SELECT labels.* FROM labels';
+
+    if (mode === 'fts' && ftsQuery) {
+        where.push('labels_fts MATCH ?');
+        bind.push(ftsQuery);
+    } else if (mode === 'exact' && lowerQuery) {
+        where.push('(labels.labelId = ? COLLATE NOCASE OR labels.text = ? COLLATE NOCASE)');
+        bind.push(rawQuery, rawQuery);
+    } else if (mode === 'like' && lowerQuery) {
+        const prefix = `${lowerQuery}%`;
+        where.push('(labels.labelId LIKE ? COLLATE NOCASE OR labels.text LIKE ? COLLATE NOCASE)');
+        bind.push(prefix, prefix);
+    }
+
+    const cultureClause = buildInClause('labels.culture', cultures, bind);
+    if (cultureClause) where.push(cultureClause);
+
+    const modelClause = buildInClause('labels.model', models, bind);
+    if (modelClause) where.push(modelClause);
+
+    if (where.length > 0) {
+        sql += ` WHERE ${where.join(' AND ')}`;
+    }
+
+    sql += mode === 'fts' ? ' ORDER BY rank' : ' ORDER BY labels.rowid DESC';
+    sql += ' LIMIT ? OFFSET ?';
+    bind.push(limit, offset);
+
+    return { sql, bind };
 }
 
 /**
@@ -283,6 +355,18 @@ self.onmessage = async (e) => {
                 }
                 break;
 
+            case 'SEARCH_LABELS':
+                {
+                    const { sql, bind } = buildSearchLabelsQuery(payload);
+                    result = db.exec({
+                        sql,
+                        bind,
+                        rowMode: 'object',
+                        returnValue: 'resultRows'
+                    });
+                }
+                break;
+
             case 'SEARCH_FTS':
                 // Join is required for contentless-delete tables to get original columns
                 // FIXED: Join on rowid instead of id (which is TEXT)
@@ -312,6 +396,61 @@ self.onmessage = async (e) => {
                     bind: [payload.store, payload.key, payload.value]
                 });
                 result = { success: true };
+                break;
+
+            case 'CATALOG_BULK_PROGRESS':
+                {
+                    const updates = Array.isArray(payload.updates) ? payload.updates : [];
+                    if (updates.length === 0) {
+                        result = { applied: 0 };
+                        break;
+                    }
+
+                    let applied = 0;
+                    db.exec('BEGIN TRANSACTION;');
+                    try {
+                        for (const update of updates) {
+                            const id = update?.id;
+                            if (!id) continue;
+                            const key = String(id);
+
+                            try {
+                                const existingRows = db.exec({
+                                    sql: 'SELECT value FROM kv_store WHERE store_name = ? AND key = ?',
+                                    bind: ['catalog', key],
+                                    rowMode: 'array',
+                                    returnValue: 'resultRows'
+                                });
+                                if (existingRows.length === 0) continue;
+
+                                const entry = JSON.parse(existingRows[0][0]);
+                                entry.processedFiles = update.processedFiles;
+                                if (typeof entry.fileCount === 'number') {
+                                    if (update.processedFiles <= 0) entry.status = 'waiting';
+                                    else if (update.processedFiles >= entry.fileCount) entry.status = 'ready';
+                                    else entry.status = 'indexing';
+                                }
+                                if (update.labelCount !== null && update.labelCount !== undefined) entry.labelCount = update.labelCount;
+                                if (update.metrics && typeof update.metrics === 'object') Object.assign(entry, update.metrics);
+                                entry.updatedAt = Date.now();
+
+                                db.exec({
+                                    sql: 'INSERT OR REPLACE INTO kv_store (store_name, key, value) VALUES (?, ?, ?)',
+                                    bind: ['catalog', key, JSON.stringify(entry)]
+                                });
+                                applied++;
+                            } catch (entryErr) {
+                                console.warn('[DB Worker] CATALOG_BULK_PROGRESS skipped entry:', key, entryErr);
+                            }
+                        }
+
+                        db.exec('COMMIT;');
+                        result = { applied };
+                    } catch (err) {
+                        db.exec('ROLLBACK;');
+                        throw err;
+                    }
+                }
                 break;
 
             case 'KV_GET':

@@ -424,6 +424,13 @@
         <div class="filter-section">
           <label class="filter-label" data-i18n="search_performance">🔍 Search Performance</label>
           <p class="setting-hint">Search is powered by SQLite FTS for maximum scalability. Local RAM usage is optimized for large datasets.</p>
+          <div class="display-option" style="margin-top: 12px;">
+            <label class="display-option-label" for="setting-empty-query-mode">Empty search behavior</label>
+            <select id="setting-empty-query-mode" class="sort-select">
+              <option value="none">Show empty state</option>
+              <option value="keep-last">Keep previous results</option>
+            </select>
+          </div>
         </div>
 
         <!-- SPEC-35: AI & Intelligence -->

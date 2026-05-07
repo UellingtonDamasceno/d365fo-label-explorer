@@ -20,44 +20,25 @@ async function requestFromDB(type, payload = {}) {
 /**
  * Search Logic
  */
+function normalizeFilterArray(value) {
+  const arr = Array.isArray(value) ? value : (value ? [value] : []);
+  return [...new Set(arr.map(v => String(v || '').trim()).filter(Boolean))];
+}
+
 async function searchIndexedDB(query, options = {}) {
-  const { culture, model, limit = 50, exactMatch = false, offset = 0 } = options;
+  const { limit = 50, exactMatch = false, offset = 0 } = options;
   const lowerQuery = query?.toLowerCase() || '';
-  
-  // Try FTS first via main thread
-  if (lowerQuery && !exactMatch && lowerQuery.length > 2) {
-    try {
-      let results = await requestFromDB('searchFTS', { query: lowerQuery, limit, offset });
-      if (model || culture) {
-        results = results.filter(l => {
-          if (model && l.model !== model) return false;
-          if (culture && l.culture !== culture) return false;
-          return true;
-        });
-      }
-      return results;
-    } catch (e) {
-      console.warn('[Search Worker] FTS failed, falling back to scanning', e);
-    }
-  }
+  const cultures = normalizeFilterArray(options.cultures || options.culture);
+  const models = normalizeFilterArray(options.models || options.model);
 
-  // Fallback to scanning
-  const results = await requestFromDB('getLabels', { filters: { model, culture } });
-  
-  if (!lowerQuery) return results.slice(offset, offset + limit);
-  
-  const filtered = results.filter(label => {
-    if (exactMatch) {
-      return label.text?.toLowerCase() === lowerQuery || 
-             label.labelId?.toLowerCase() === lowerQuery;
-    } else {
-      return label.s?.includes(lowerQuery) || 
-             label.text?.toLowerCase().includes(lowerQuery) ||
-             label.labelId?.toLowerCase().includes(lowerQuery);
-    }
+  return await requestFromDB('searchLabels', {
+    query: lowerQuery,
+    exactMatch,
+    limit,
+    offset,
+    cultures,
+    models
   });
-
-  return filtered.slice(offset, offset + limit);
 }
 
 self.onmessage = async (e) => {
@@ -82,10 +63,7 @@ self.onmessage = async (e) => {
         result = await searchIndexedDB(query, options);
         break;
       case 'BATCH_SEARCH':
-        const promises = options.cultures.map(culture => 
-          searchIndexedDB(query, { ...options, culture, limit: Math.ceil((options.limit || 100) / options.cultures.length) })
-        );
-        result = (await Promise.all(promises)).flat().slice(0, options.limit || 100);
+        result = await searchIndexedDB(query, options);
         break;
       case 'GET_MODELS':
         result = await requestFromDB('getAllModels');

@@ -157,12 +157,18 @@ export function createBackgroundProgressController({
 
       if (payload.length === 0) return;
 
-      if (typeof db.updateCatalogProgressBatch === 'function') {
+      const bulkProgressUpdate = typeof db.updateCatalogProgressBulk === 'function'
+        ? db.updateCatalogProgressBulk.bind(db)
+        : (typeof db.updateCatalogProgressBatch === 'function'
+          ? db.updateCatalogProgressBatch.bind(db)
+          : null);
+
+      if (bulkProgressUpdate) {
         try {
-          await db.updateCatalogProgressBatch(payload);
+          await bulkProgressUpdate(payload);
           return;
         } catch (err) {
-          console.warn('Failed to flush catalog progress in batch mode. Falling back.', err);
+          console.warn('Failed to flush catalog progress in bulk mode. Falling back.', err);
         }
       }
 

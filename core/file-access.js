@@ -141,6 +141,45 @@ export async function walkDirectory(dirHandle, onEntry, basePath = '') {
   }
 }
 
+const DISCOVERY_MAX_DEPTH = 4;
+const DISCOVERY_TRAVERSAL_CONCURRENCY = 8;
+const DISCOVERY_PROGRESS_LOG_EVERY_DIRS = 250;
+const DISCOVERY_HEAVY_SKIP_DIRS = new Set([
+  'bin',
+  'Descriptor',
+  'XppMetadata',
+  'Resources',
+  'Reports',
+  'BuildProject'
+]);
+
+function shouldSkipDiscoveryDirectory(directoryName) {
+  return directoryName.startsWith('Ax') || DISCOVERY_HEAVY_SKIP_DIRS.has(directoryName);
+}
+
+async function mapWithConcurrency(items, concurrency, mapper) {
+  if (items.length === 0) return [];
+
+  if (items.length <= concurrency) {
+    return Promise.all(items.map(mapper));
+  }
+
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(concurrency, items.length);
+
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (true) {
+      const currentIndex = nextIndex++;
+      if (currentIndex >= items.length) return;
+      results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
+}
+
 /**
  * Find all AxLabelFile directories - TURBO DISCOVERY (SPEC-16)
  * Uses O(1) probing and skips heavy D365FO metadata folders for instant discovery
@@ -152,13 +191,18 @@ export async function discoverLabelFiles(rootHandle, onProgress = () => {}) {
   let scannedDirs = 0;
   let foundModels = 0;
   
-  console.log(`🔍 Turbo Discovery: scanning from root ${rootHandle.name}`);
+  console.log(
+    `🔍 Turbo Discovery: scanning from root ${rootHandle.name} (maxDepth=${DISCOVERY_MAX_DEPTH}, concurrency=${DISCOVERY_TRAVERSAL_CONCURRENCY})`
+  );
 
   async function searchForModels(dirHandle, currentDepth, maxDepth) {
     if (currentDepth > maxDepth) return [];
     
     const modelsFound = [];
     scannedDirs++;
+    if (scannedDirs % DISCOVERY_PROGRESS_LOG_EVERY_DIRS === 0) {
+      console.log(`🔎 Discovery progress: scanned ${scannedDirs} directories, found ${foundModels} models`);
+    }
     
     // 1. Fast O(1) probe: Does this directory have 'AxLabelFile'?
     try {
@@ -187,21 +231,25 @@ export async function discoverLabelFiles(rootHandle, onProgress = () => {}) {
 
     // 2. It doesn't have AxLabelFile. Let's check its children.
     try {
-      const promises = [];
+      const childDirectories = [];
       for await (const entry of dirHandle.values()) {
         if (entry.kind === 'directory') {
           // Skip known heavy metadata folders that definitely don't contain AxLabelFile
           // This avoids iterating through thousands of XML files in AxClass, AxTable, etc.
-          if (entry.name.startsWith('Ax') || 
-              ['bin', 'Descriptor', 'XppMetadata', 'Resources', 'Reports', 'BuildProject'].includes(entry.name)) {
+          if (shouldSkipDiscoveryDirectory(entry.name)) {
             continue;
           }
           
-          promises.push(searchForModels(entry, currentDepth + 1, maxDepth));
+          childDirectories.push(entry);
         }
       }
-      
-      const results = await Promise.all(promises);
+
+      const results = await mapWithConcurrency(
+        childDirectories,
+        DISCOVERY_TRAVERSAL_CONCURRENCY,
+        (entry) => searchForModels(entry, currentDepth + 1, maxDepth)
+      );
+
       for (const res of results) {
         modelsFound.push(...res);
       }
@@ -212,10 +260,10 @@ export async function discoverLabelFiles(rootHandle, onProgress = () => {}) {
     return modelsFound;
   }
   
-  // Search up to 4 levels deep to support PackagesLocalDirectory/Package/Model/
-  const models = await searchForModels(rootHandle, 0, 4);
+  // Search up to PackagesLocalDirectory/Package/Model/
+  const models = await searchForModels(rootHandle, 0, DISCOVERY_MAX_DEPTH);
   
-  console.log(`✅ Turbo Discovery complete: ${models.length} models found`);
+  console.log(`✅ Turbo Discovery complete: ${models.length} models found after scanning ${scannedDirs} directories`);
   return models;
 }
 

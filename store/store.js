@@ -21,7 +21,8 @@ const _state = {
     groupDuplicates: true,
     uiLanguage: 'auto',
     builderDirectSaveMode: false,
-    suppressRepeatedDownloadPrompt: false
+    suppressRepeatedDownloadPrompt: false,
+    emptyQueryMode: 'none' // 'none' | 'keep-last'
   },
   sortPreference: 'relevance',
   selectorModal: {
@@ -43,7 +44,7 @@ const _state = {
     isLoading: false,
     hasMore: true,
     offset: 0,
-    limit: 500 // Chunk size
+    limit: 200 // Chunk size
   },
   virtualScroll: {
     itemHeight: 160, // Calculated dynamically from CSS var(--card-height) + gap
