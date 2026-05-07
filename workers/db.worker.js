@@ -70,28 +70,29 @@ async function initSQLite() {
 }
 
 function setupSchema() {
-    // Drop old FTS table if it was created with incorrect content_rowid
-    // This is necessary because VIRTUAL TABLE schemas are persistent.
+    let rebuildFTS = false;
+    
     try {
-        // First try to drop triggers to avoid side effects during FTS drop
-        db.exec(`
-            DROP TRIGGER IF EXISTS labels_ai;
-            DROP TRIGGER IF EXISTS labels_ad;
-            DROP TRIGGER IF EXISTS labels_au;
-            DROP TABLE IF EXISTS labels_fts;
-        `);
+        // Check FTS integrity - SPEC-11 Repair Logic
+        db.exec("INSERT INTO labels_fts(labels_fts) VALUES('integrity-check');");
     } catch (e) {
-        console.warn('[DB Worker] FTS Drop failed, attempting forced recovery:', e);
-        // If SQLITE_CORRUPT_VTAB or similar occurs, we need to be more aggressive
+        console.warn('[DB Worker] FTS corrupted or missing, marked for rebuild:', e.message);
+        rebuildFTS = true;
+    }
+
+    if (rebuildFTS) {
         try {
-            // Drop everything to start clean
+            console.log('[DB Worker] Rebuilding FTS system...');
             db.exec(`
-                DROP TABLE IF EXISTS labels;
-                DROP TABLE IF EXISTS kv_store;
-                DROP TABLE IF EXISTS kv_blobs;
+                DROP TRIGGER IF EXISTS labels_ai;
+                DROP TRIGGER IF EXISTS labels_ad;
+                DROP TRIGGER IF EXISTS labels_au;
+                DROP TABLE IF EXISTS labels_fts;
             `);
-        } catch (fatal) {
-            console.error('[DB Worker] Fatal schema corruption:', fatal);
+        } catch (e) {
+            console.error('[DB Worker] Critical failure during FTS drop:', e);
+            // If we can't even drop FTS, the whole DB might be toast
+            // But we try to proceed
         }
     }
 
@@ -146,6 +147,20 @@ function setupSchema() {
             INSERT INTO labels_fts(rowid, id, s) VALUES (new.rowid, new.id, new.s);
         END;
     `);
+
+    // If we just recreated the FTS table, repopulate it from the labels table
+    if (rebuildFTS) {
+        try {
+            console.log('[DB Worker] Repopulating FTS index...');
+            db.exec(`
+                INSERT INTO labels_fts(rowid, id, s)
+                SELECT rowid, id, s FROM labels;
+            `);
+            console.log('[DB Worker] FTS repopulation complete.');
+        } catch (e) {
+            console.error('[DB Worker] FTS repopulation failed:', e);
+        }
+    }
 }
 
 /**
@@ -199,6 +214,54 @@ self.onmessage = async (e) => {
                 });
                 break;
 
+            case 'CLEAR_LABELS':
+                db.exec('BEGIN TRANSACTION;');
+                try {
+                    // Use a more robust way to clear everything
+                    // Drop triggers first to avoid overhead during bulk delete
+                    db.exec(`
+                        DROP TRIGGER IF EXISTS labels_ai;
+                        DROP TRIGGER IF EXISTS labels_ad;
+                        DROP TRIGGER IF EXISTS labels_au;
+                        
+                        -- FTS5 'delete-all' is the fastest and safest way to purge the index
+                        INSERT INTO labels_fts(labels_fts) VALUES('delete-all');
+                        
+                        -- Clear the main table
+                        DELETE FROM labels;
+                        
+                        -- Recreate triggers
+                        CREATE TRIGGER IF NOT EXISTS labels_ai AFTER INSERT ON labels BEGIN
+                            INSERT INTO labels_fts(rowid, id, s) VALUES (new.rowid, new.id, new.s);
+                        END;
+                        CREATE TRIGGER IF NOT EXISTS labels_ad AFTER DELETE ON labels BEGIN
+                            INSERT INTO labels_fts(labels_fts, rowid, id, s) VALUES ('delete', old.rowid, old.id, old.s);
+                        END;
+                        CREATE TRIGGER IF NOT EXISTS labels_au AFTER UPDATE ON labels BEGIN
+                            INSERT INTO labels_fts(labels_fts, rowid, id, s) VALUES ('delete', old.rowid, old.id, old.s);
+                            INSERT INTO labels_fts(rowid, id, s) VALUES (new.rowid, new.id, new.s);
+                        END;
+                    `);
+                    db.exec('COMMIT;');
+                    result = { success: true };
+                } catch (err) {
+                    db.exec('ROLLBACK;');
+                    // If everything fails, try the nuclear option: DROP and CREATE
+                    console.warn('[DB Worker] CLEAR_LABELS failed, trying DROP recovery...', err.message);
+                    try {
+                        db.exec(`
+                            DROP TABLE IF EXISTS labels_fts;
+                            DROP TABLE IF EXISTS labels;
+                        `);
+                        setupSchema();
+                        result = { success: true, recovered: true };
+                    } catch (fatal) {
+                        console.error('[DB Worker] CLEAR_LABELS fatal recovery failure:', fatal);
+                        throw fatal;
+                    }
+                }
+                break;
+
             case 'ADD_LABELS':
                 db.exec('BEGIN TRANSACTION;');
                 try {
@@ -222,9 +285,10 @@ self.onmessage = async (e) => {
 
             case 'SEARCH_FTS':
                 // Join is required for contentless-delete tables to get original columns
+                // FIXED: Join on rowid instead of id (which is TEXT)
                 result = db.exec({
                     sql: `SELECT labels.* FROM labels_fts 
-                          JOIN labels ON labels.id = labels_fts.rowid 
+                          JOIN labels ON labels.rowid = labels_fts.rowid 
                           WHERE labels_fts MATCH ? ORDER BY rank LIMIT ? OFFSET ?`,
                     bind: [payload.query, payload.limit || 50, payload.offset || 0],
                     rowMode: 'object',

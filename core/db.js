@@ -89,8 +89,7 @@ export async function getAllModels() {
 }
 
 export async function clearLabels() {
-    await dbWorker.send('EXEC', { sql: 'DELETE FROM labels_fts' });
-    const res = await dbWorker.send('EXEC', { sql: 'DELETE FROM labels' });
+    const res = await dbWorker.send('CLEAR_LABELS');
     return res.payload;
 }
 
