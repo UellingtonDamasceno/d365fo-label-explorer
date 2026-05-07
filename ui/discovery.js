@@ -1227,12 +1227,17 @@ export function createDiscoveryController({
                 labels: e.data.totalLabels, 
                 files: e.data.processedFiles 
               });
-              totalLabels = 0;
-              processedFiles = 0;
+              
+              let currentTotalLabels = 0;
+              let currentProcessedFiles = 0;
               for (const stats of workerStats.values()) {
-                totalLabels += stats.labels;
-                processedFiles += stats.files;
+                currentTotalLabels += stats.labels;
+                currentProcessedFiles += stats.files;
               }
+              
+              processedFiles = currentProcessedFiles;
+              totalLabels = currentTotalLabels;
+              
               updateProgress();
               break;
 
