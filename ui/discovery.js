@@ -167,6 +167,8 @@ export function createDiscoveryController({
       await searchService.clearWarmStartCache();
       await db.clearLabels();
       await db.clearCatalog();
+      await db.setMetadata('lastIndexed', null);
+      updateLastIndexedDisplay(null);
       searchService.clearSearch();
       await searchService.initSearch();
       if (elements.scanStatus) {
@@ -836,6 +838,8 @@ export function createDiscoveryController({
     await searchService.clearWarmStartCache();
     await db.clearLabels();
     await db.clearCatalog();
+    await db.setMetadata('lastIndexed', null);
+    updateLastIndexedDisplay(null);
     searchService.clearSearch();
     await searchService.initSearch();
     console.timeEnd('⏳ Database & Search Clear');
@@ -1311,10 +1315,12 @@ export function createDiscoveryController({
     console.log(`✅ ${isPriority ? 'PRIORITY' : 'BACKGROUND'} complete: ${totalLabels} labels in ${elapsed.toFixed(1)}s`);
 
     await flushCatalogProgressNow();
-    await db.setMetadata('lastIndexed', Date.now());
+    const now = Date.now();
+    await db.setMetadata('lastIndexed', now);
     state.totalLabels = await db.getLabelCount();
     searchService.setIDBTotalCount(state.totalLabels);
     updateLabelCount();
+    updateLastIndexedDisplay(now);
     
     return { totalLabels, processedFiles, errors };
   }
@@ -1650,6 +1656,8 @@ export function createDiscoveryController({
         searchService.invalidateSearchCache();
         await searchService.clearWarmStartCache();
         await db.clearLabels();
+        await db.setMetadata('lastIndexed', null);
+        updateLastIndexedDisplay(null);
         await searchService.clearSearch();
         await searchService.initSearch();
         
