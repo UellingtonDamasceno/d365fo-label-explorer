@@ -7,22 +7,12 @@
   },
   "assets": {
     "directory": ".",
-    "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "exclude": [
-      ".git",
-      "node_modules",
-      "__pycache__",
-      "bugs",
-      "plans",
-      "specs",
-      "knowledge"
-    ]
-  },
-  "http_headers": {
-    "Cross-Origin-Opener-Policy": "same-origin",
-    "Cross-Origin-Embedder-Policy": "require-corp",
-    "Cross-Origin-Resource-Policy": "same-origin"
+    "headers": {
+      "Cross-Origin-Opener-Policy": "same-origin",
+      "Cross-Origin-Embedder-Policy": "require-corp",
+      "Cross-Origin-Resource-Policy": "same-origin"
+    }
   },
   "compatibility_flags": [
     "nodejs_compat"
