@@ -473,6 +473,24 @@ self.onmessage = async (e) => {
                 result = allRows.map(r => JSON.parse(r[0]));
                 break;
 
+            case 'KV_PUT_BULK':
+                db.exec('BEGIN TRANSACTION;');
+                try {
+                    const stmt = db.prepare(`INSERT OR REPLACE INTO kv_store (store_name, key, value) VALUES (?, ?, ?)`);
+                    for (const item of payload.entries) {
+                        stmt.bind([payload.store, String(item.key), JSON.stringify(item.value)]);
+                        stmt.step();
+                        stmt.reset();
+                    }
+                    stmt.finalize();
+                    db.exec('COMMIT;');
+                    result = { count: payload.entries.length };
+                } catch (err) {
+                    db.exec('ROLLBACK;');
+                    throw err;
+                }
+                break;
+
             case 'KV_PUT':
                 db.exec({
                     sql: 'INSERT OR REPLACE INTO kv_store (store_name, key, value) VALUES (?, ?, ?)',

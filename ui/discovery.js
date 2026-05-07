@@ -901,7 +901,7 @@ export function createDiscoveryController({
         });
       });
     });
-    await db.saveCatalog(catalogEntries);
+    await db.saveCatalogBulk(catalogEntries);
     
     // SPEC-42: Set initial filters to priority languages
     state.filters.cultures = [...priorityLangs];
@@ -918,17 +918,19 @@ export function createDiscoveryController({
     state.realtimeStreaming.streamedLabels = 0;
     showLiveIndexLine();
 
+    // PHASE A: Start priority indexing and IMMEDIATELY release UI
     const priorityPromise = indexFilesWithWorkers(priorityFiles, true, {
       streamLabels: true,
       streamLimit: state.realtimeStreaming.maxLabels
     });
 
-    // Release UI
-    await new Promise((resolve) => setTimeout(resolve, 700));
-    showMainInterface();
+    // Release UI instantly (minimal delay for smooth transition)
+    setTimeout(() => {
+      showMainInterface();
+    }, 100);
 
-    try {
-      await priorityPromise;
+    // PHASE B: Handle completion and background indexing ASYNCHRONOUSLY
+    priorityPromise.then(async () => {
       queueCatalogProgressFlush();
       await flushCatalogProgressNow();
 
@@ -956,13 +958,13 @@ export function createDiscoveryController({
         releaseIndexedFileHandlesIfPossible();
         emitIndexingCompleteSync(state.totalLabels, Date.now());
       }
-    } catch (err) {
+    }).catch((err) => {
       console.error('Priority indexing error:', err);
       state.indexingMode = 'idle';
       stopRealtimeStreaming();
       hideLiveIndexLine();
       showError(t('toast_indexing_error') || 'Indexing failed');
-    }
+    });
   }
 
   /**
@@ -1321,15 +1323,21 @@ export function createDiscoveryController({
           reject(e);
         };
         
-        worker.postMessage({
-          type: 'PROCESS_FILES_HANDLES',
-          files: workerFiles,
-          isPriority,
-          streamLabels,
-          streamLimit: streamLimitPerWorker,
-          dbName: DB_NAME,
-          dbVersion: DB_VERSION
-        });
+        // SPEC-23: Sub-chunking to prevent giant postMessage serialization
+        const SUB_CHUNK_SIZE = 500;
+        for (let j = 0; j < workerFiles.length; j += SUB_CHUNK_SIZE) {
+          const subChunk = workerFiles.slice(j, j + SUB_CHUNK_SIZE);
+          worker.postMessage({
+            type: 'PROCESS_FILES_HANDLES',
+            files: subChunk,
+            isPriority,
+            streamLabels,
+            streamLimit: streamLimitPerWorker, // Limit applies to priority stream
+            dbName: DB_NAME,
+            dbVersion: DB_VERSION,
+            isLastChunk: (j + SUB_CHUNK_SIZE >= workerFiles.length)
+          });
+        }
       });
       
       workerPromises.push(workerPromise);

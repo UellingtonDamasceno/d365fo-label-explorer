@@ -407,27 +407,50 @@ function updateLastIndexedDisplay(lastIndexed) {
 
 async function populateFilters() {
   if (state.ui.isPopulatingFilters) return;
+  
+  // Use memory cache if available
   if (state.ui.catalogCache) {
     state.availableFilters.cultures = state.ui.catalogCache.cultures;
     state.availableFilters.models = state.ui.catalogCache.models;
     searchUIController.renderModalFilters();
     return;
   }
+
   state.ui.isPopulatingFilters = true;
   try {
-    const catalog = await db.getCatalog();
-    let cultures = [...new Set(catalog.map(entry => entry.culture).filter(Boolean))].sort();
-    let models = [...new Set(catalog.map(entry => entry.model).filter(Boolean))].sort();
-    state.ui.catalogCache = { cultures, models };
-    state.availableFilters.cultures = cultures;
-    state.availableFilters.models = models;
+    let cultures = [];
+    let models = [];
+
+    // OPTIMIZATION: If we are indexing, don't hit the DB for the catalog.
+    // Use discoveryData which is already in memory and accurate for current session.
+    if (state.indexingMode !== 'idle' && state.discoveryData && state.discoveryData.length > 0) {
+      console.log('[Orchestrator] Using discoveryData for filter hydration (Indexing active)');
+      models = state.discoveryData.map(m => m.model).sort();
+      cultures = [...new Set(state.discoveryData.flatMap(m => m.cultures.map(c => c.culture)))].sort();
+    } else {
+      // Idle mode: Fetch full catalog from DB for persistent state
+      const catalog = await db.getCatalog();
+      cultures = [...new Set(catalog.map(entry => entry.culture).filter(Boolean))].sort();
+      models = [...new Set(catalog.map(entry => entry.model).filter(Boolean))].sort();
+    }
+
+    if (cultures.length > 0 || models.length > 0) {
+      state.ui.catalogCache = { cultures, models };
+      state.availableFilters.cultures = cultures;
+      state.availableFilters.models = models;
+    }
+    
     searchUIController.renderModalFilters();
+  } catch (err) {
+    console.warn('[Orchestrator] Failed to populate filters:', err);
   } finally {
     state.ui.isPopulatingFilters = false;
   }
 }
 
 function openAdvancedSearchModal() {
+  // Ensure filters are ready before showing modal
+  populateFilters();
   searchUIController.renderModalFilters();
   modalController.openAdvancedSearchModal();
 }

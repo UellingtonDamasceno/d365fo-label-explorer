@@ -150,11 +150,18 @@ export async function getSavedDirectoryHandle() {
 }
 
 // Catalog
+export async function saveCatalogBulk(entries) {
+    if (!entries || entries.length === 0) return 0;
+    const bulkEntries = entries.map(entry => ({
+        key: entry.id,
+        value: entry
+    }));
+    const res = await dbWorker.send('KV_PUT_BULK', { store: 'catalog', entries: bulkEntries });
+    return res.payload.count;
+}
+
 export async function saveCatalog(entries) {
-    for (const entry of entries) {
-        await dbWorker.send('KV_PUT', { store: 'catalog', key: entry.id, value: entry });
-    }
-    return entries.length;
+    return saveCatalogBulk(entries);
 }
 
 export async function updateCatalogStatus(id, status, labelCount = null) {
