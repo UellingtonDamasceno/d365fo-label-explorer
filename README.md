@@ -43,6 +43,20 @@ Then open `http://localhost:8000` in your browser.
 4. Wait for indexing to complete (now faster with SQLite streaming)
 5. Start searching!
 
+## Performance Baseline Telemetry
+
+Lightweight telemetry is emitted to the DevTools console (informational only; no behavior changes).
+
+1. Open DevTools → **Console** and filter by `[Telemetry]`
+2. Run a full discovery + indexing flow (or Quick Start + background indexing)
+3. Run representative searches (example buckets): `a`, `cust`, `sales order`, `@SYS12345`
+4. Capture `durationMs`, counts, and throughput from:
+   - `[Telemetry] discovery.scan:start/end` (model/file counts)
+   - `[Telemetry] indexing.run:start/end` (files, labels, labelsPerSecond/filesPerSecond)
+   - `[Telemetry] search.query:start/end` (queryLengthBucket, resultCount, durationMs)
+
+Optional: disable telemetry with `localStorage.setItem('ff_perf_telemetry', '0')` and refresh.
+
 ## Browser Requirements
 
 | Browser | Supported | Notes |

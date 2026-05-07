@@ -61,11 +61,54 @@ async function initSQLite() {
             console.warn('[DB Worker] OPFS NOT available (library limitation), using memory.');
         }
 
-        setupSchema();
+        try {
+            setupSchema();
+        } catch (schemaErr) {
+            if (schemaErr.message.includes('malformed') || schemaErr.message.includes('SQLITE_CORRUPT')) {
+                console.error('[DB Worker] FATAL CORRUPTION detected during schema setup. Attempting nuclear recovery...');
+                await nuclearRecovery();
+            } else {
+                throw schemaErr;
+            }
+        }
         return true;
     } catch (err) {
         console.error('[DB Worker] CRITICAL initialization failure:', err);
         throw err;
+    }
+}
+
+/**
+ * Deletes the database file from OPFS to recover from fatal corruption
+ */
+async function nuclearRecovery() {
+    try {
+        const filename = db?.filename || '/' + DB_NAME;
+        if (db) {
+            console.log('[DB Worker] Closing corrupt database...');
+            db.close();
+            db = null;
+        }
+
+        // Try to delete via OPFS directly (using sqlite3 VFS abstraction)
+        console.log('[DB Worker] Deleting corrupt database file:', filename);
+        if (sqlite3.capi.sqlite3_vfs_find('opfs')) {
+            // Delete the main file and the WAL/SHM files if they exist
+            sqlite3.wasm.deleteFile(filename);
+            sqlite3.wasm.deleteFile(filename + '-wal');
+            sqlite3.wasm.deleteFile(filename + '-shm');
+        }
+
+        console.log('[DB Worker] Nuclear recovery complete. Re-initializing...');
+        // Re-initialize a fresh database
+        db = new sqlite3.oo1.OpfsDb(filename, 'c');
+        db.exec('PRAGMA synchronous = NORMAL; PRAGMA journal_mode = WAL;');
+        setupSchema();
+    } catch (fatal) {
+        console.error('[DB Worker] Nuclear recovery failed:', fatal);
+        // Last resort: Fallback to memory
+        db = new sqlite3.oo1.DB('/' + DB_NAME, 'c');
+        setupSchema();
     }
 }
 
